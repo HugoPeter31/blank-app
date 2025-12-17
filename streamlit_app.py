@@ -286,7 +286,9 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
     """
     Send an email and return (success, message).
 
-    Why: The UI should never crash if SMTP fails; errors should be visible and actionable.
+    BCC:
+    - A copy is silently sent to the admin inbox (ADMIN_INBOX)
+    - The recipient does NOT see the admin email address
     """
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -294,20 +296,26 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
     msg["To"] = to_email
     msg.set_content(body)
 
+    # BCC is not added to the headers, only to the SMTP recipient list
+    recipients = [to_email, ADMIN_INBOX]
+
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
             smtp.starttls()
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=recipients)
 
-        logger.info("Email sent to %s | subject=%s", to_email, subject)
+        logger.info(
+            "Email sent | to=%s | bcc=%s | subject=%s",
+            to_email,
+            ADMIN_INBOX,
+            subject,
+        )
         return True, "Email sent."
 
     except Exception as exc:
-        # Log full details for debugging; avoid leaking technical info to end users.
-        logger.exception("Email sending failed for %s", to_email)
+        logger.exception("Email sending failed")
 
-        # Show a short user-friendly message; optionally show technical details in DEBUG mode.
         if DEBUG:
             return False, f"Email could not be sent: {exc}"
         return False, "Email could not be sent due to a technical issue."
