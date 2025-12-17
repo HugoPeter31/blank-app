@@ -508,15 +508,30 @@ def render_charts(df: pd.DataFrame) -> None:
     df_dates = df.copy()
     df_dates["created_at"] = pd.to_datetime(df_dates["created_at"], errors="coerce")
     df_dates = df_dates.dropna(subset=["created_at"])
-    per_day = df_dates.groupby(df_dates["created_at"].dt.date).size()
+
+    if df_dates.empty:
+        st.info("No valid submission dates available for daily chart.")
+        return
+
+    date_index = pd.date_range(
+        start=df_dates["created_at"].min().date(),
+        end=df_dates["created_at"].max().date(),
+        freq="D",
+    )
+
+    per_day = (
+        df_dates.groupby(df_dates["created_at"].dt.date)
+        .size()
+        .reindex(date_index.date, fill_value=0)
+    )
 
     fig, ax = plt.subplots()
-    ax.bar(per_day.index, per_day.values, width=0.7, align="center")
+    ax.plot(date_index, per_day.values, marker="o")  # clearer trend than bars for time series
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-    plt.xticks(rotation=45, ha="right")
+    fig.autofmt_xdate(rotation=45)
     ax.set_xlabel("Date")
     ax.set_ylabel("Number of Issues Submitted")
-    ax.grid(axis="y", linestyle="--", alpha=0.5)
+    ax.grid(True, linestyle="--", alpha=0.4)
     st.pyplot(fig)
 
     st.subheader("Number of Issues by Importance Level")
