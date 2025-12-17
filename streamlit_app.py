@@ -101,9 +101,11 @@ SMTP_PORT = int(get_secret("SMTP_PORT", "587"))
 SMTP_USERNAME = get_secret("SMTP_USERNAME")
 SMTP_PASSWORD = get_secret("SMTP_PASSWORD")
 FROM_EMAIL = get_secret("FROM_EMAIL", SMTP_USERNAME)
+ADMIN_INBOX = get_secret("ADMIN_INBOX", FROM_EMAIL)
 
 # Admin page password should be provided via Streamlit secrets (no hardcoding).
 ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")
+
 
 # Optional debug flag (recommended): set DEBUG = "1" in Streamlit Secrets to show technical email errors.
 DEBUG = get_secret("DEBUG", "0") == "1"
