@@ -1,30 +1,33 @@
-# HSG Reporting Tool
-# Developed by: Arthur Lavric & Fabio Patierno
+"""
+HSG Reporting Tool (Streamlit)
+Developed by: Arthur Lavric & Fabio Patierno
 
-# The application enables members of the HSG community to report facility-related issues
-# directly via a user-friendly interface. All submitted issues are securely stored in a
-# database and can be reviewed and managed by the responsible facility management team.
+Purpose:
+- Allow HSG community members to submit facility-related issues via a simple UI.
+- Store submissions in a database.
+- Provide an admin-only page to update issue statuses (e.g. Pending, In Progress, Resolved) 
+and notify users when resolved.
 
-# The tool further includes an administrative interface that allows authorized personnel
-# to update the status of submitted issues (e.g. Pending, In Progress, Resolved), thereby
-# ensuring transparent communication and an efficient issue-resolution process.
+Note:
+Access to the administrative “Overwrite Status” page is password-protected.
+For evaluation purposes, the password is:
+-> PleaseOpen!
+"""
 
-# Note:
-# Access to the administrative “Overwrite Status” page is password-protected.
-# For evaluation purposes, the password is:
-# PleaseOpen!
+from __future__ import annotations
 
-import re # Added for validation
-import sqlite3 # Added for database
-from datetime import datetime # Added for the timestamps
+import re # for validation
+import sqlite3 # for database
+from datetime import datetime # for the timestamps
 from email.message import EmailMessage
-import smtplib # Added for sending emails
+from typing import Iterable
 
-import pandas as pd # Added for tables
-import pytz # Added for right time zone
-import streamlit as st # Added for Streamlit
+import matplotlib.dates as mdates # for charts
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates # Added for charts
+import pandas as pd # for tables
+import pytz # for right time zone
+import smtplib
+import streamlit as st
 
 
 # ----------------------------
@@ -46,12 +49,34 @@ ISSUE_TYPES = [
 IMPORTANCE_LEVELS = ["Low", "Medium", "High"]
 STATUS_LEVELS = ["Pending", "In Progress", "Resolved"]
 
+# Compile regex once (readability + small performance benefit)
+EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
+ROOM_PATTERN = re.compile(r"^[A-Z] \d{2}-\d{3}$")
+
+
+# ----------------------------
+# Data model
+# ----------------------------
+@dataclass(frozen=True)
+class Submission:
+    """Immutable representation of a submission input."""
+    name: str
+    hsg_email: str
+    issue_type: str
+    room_number: str
+    importance: str
+    user_comment: str
+
 
 # ----------------------------
 # Secrets (Streamlit Cloud → Settings → Secrets)
 # ----------------------------
 def get_secret(key: str, default: str | None = None) -> str:
-    """Helper: get secret or provide readable error."""
+    """
+    Read a Streamlit secret key. If missing, stop early with a helpful error.
+
+    Why: Missing secrets cause confusing runtime failures (e.g., SMTP login errors).
+    """
     if key in st.secrets:
         return str(st.secrets[key])
     if default is not None:
@@ -65,7 +90,76 @@ SMTP_PORT = int(get_secret("SMTP_PORT", "587"))
 SMTP_USERNAME = get_secret("SMTP_USERNAME")
 SMTP_PASSWORD = get_secret("SMTP_PASSWORD")
 FROM_EMAIL = get_secret("FROM_EMAIL", SMTP_USERNAME)
-ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")  # for overwrite page
+
+# Admin page password should be provided via Streamlit secrets (no hardcoding).
+ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")
+
+
+# ----------------------------
+# Time helpers
+# ----------------------------
+def now_zurich_str() -> str:
+    """
+    Return an unambiguous timestamp (ISO 8601) including timezone offset.
+
+    Why: Avoids confusion and parsing errors across environments and daylight saving changes.
+    """
+    return datetime.now(APP_TZ).isoformat(timespec="seconds")
+
+
+# ----------------------------
+# Validation: Check whether the specified email address complies with the requirements of an official HSG mail address
+# ----------------------------
+def valid_email(hsg_email: str) -> bool:
+    """Return True if the email is an official HSG address."""
+    return bool(EMAIL_PATTERN.fullmatch(hsg_email.strip()))
+
+
+def valid_room_number(room_number: str) -> bool:
+    """Return True if the room number matches the HSG format, e.g. 'A 09-001'."""
+    return bool(ROOM_PATTERN.fullmatch(room_number.strip()))
+
+
+def validate_submission_input(sub: Submission) -> list[str]:
+    """
+    Validate user inputs and return human-readable error messages.
+
+    Why: The UI should guide the user to correct inputs rather than crashing with exceptions.
+    """
+    errors: list[str] = []
+
+    if not sub.name.strip():
+        errors.append("Name is required.")
+
+    if not sub.hsg_email.strip():
+        errors.append("HSG Email Address is required.")
+    elif not valid_email(sub.hsg_email):
+        errors.append("Invalid mail address. Use …@unisg.ch or …@student.unisg.ch.")
+
+    if not sub.room_number.strip():
+        errors.append("Room Number is required.")
+    elif not valid_room_number(sub.room_number):
+        errors.append("Invalid room number format. Example: 'A 09-001'.")
+
+    if sub.issue_type not in ISSUE_TYPES:
+        errors.append("Invalid issue type selection.")
+
+    if sub.importance not in IMPORTANCE_LEVELS:
+        errors.append("Invalid importance selection.")
+
+    if not sub.user_comment.strip():
+        errors.append("Problem Description is required.")
+
+    return errors
+
+
+def validate_admin_email(email: str) -> list[str]:
+    """Validation for admin operations: keep rules consistent across the app."""
+    if not email.strip():
+        return ["Email address is required."]
+    if not valid_email(email):
+        return ["Please provide a valid HSG email address (…@unisg.ch or …@student.unisg.ch)."]
+    return []
 
 
 # ----------------------------
@@ -73,11 +167,16 @@ ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")  # for overwrite page
 # ----------------------------
 @st.cache_resource
 def get_connection() -> sqlite3.Connection:
-    # check_same_thread=False is important for Streamlit's reruns/sessions
+    """
+    Create and cache a SQLite connection for Streamlit.
+
+    Why: Streamlit reruns scripts often; caching prevents re-opening connections unnecessarily.
+    """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def init_db(con: sqlite3.Connection) -> None:
+    """Create the required table if it does not exist."""
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS submissions (
@@ -96,62 +195,81 @@ def init_db(con: sqlite3.Connection) -> None:
     )
     con.commit()
 
-def migrate_db(con: sqlite3.Connection) -> None:
-    cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
 
-    if "created_at" not in cols:
-        con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
+def fetch_submissions(con: sqlite3.Connection) -> pd.DataFrame:
+    """Fetch all submissions as a DataFrame (single responsibility)."""
+    return pd.read_sql("SELECT * FROM submissions", con)
+
+
+def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
+    """Insert a validated submission into the database."""
+    created_at = now_zurich_str()
+    updated_at = created_at
+
+    with con:
         con.execute(
-            "UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+            """
+            INSERT INTO submissions
+            (name, hsg_email, issue_type, room_number, importance, status, user_comment, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
+            """,
+            (
+                sub.name.strip(),
+                sub.hsg_email.strip(),
+                sub.issue_type,
+                sub.room_number.strip(),
+                sub.importance,
+                sub.user_comment.strip(),
+                created_at,
+                updated_at,
+            ),
         )
 
-    if "updated_at" not in cols:
-        con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
+
+def update_issue_status(con: sqlite3.Connection, issue_id: int, new_status: str) -> None:
+    """Update status and timestamp in the database."""
+    updated_at = now_zurich_str()
+    with con:
         con.execute(
-            "UPDATE submissions SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"
+            """
+            UPDATE submissions
+            SET status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_status, updated_at, int(issue_id)),
         )
 
-    con.commit()
-
-def now_zurich_str() -> str:
-    return datetime.now(APP_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-
-# ----------------------------
-# Validation: Check whether the specified email address complies with the requirements of an official HSG mail address
-# ----------------------------
-def valid_email(hsg_email: str) -> bool:
-    # Accept: xxx@unisg.ch OR xxx@student.unisg.ch
-    pattern = r"^[\w.]+@(student\.)?unisg\.ch$"
-    return bool(re.match(pattern, hsg_email.strip()))
-
-# Check whether the specified room number complies with the correct format required by HSG
-def valid_room_number(room_number: str) -> bool:
-    # Example format: "A 09-001"
-    pattern = r"^[A-Z] \d{2}-\d{3}$"
-    return bool(re.match(pattern, room_number.strip()))
 
 
 # ----------------------------
 # Email
 # ----------------------------
-def send_email(to_email: str, subject: str, body: str) -> None:
+def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
+    """
+    Send an email and return (success, message).
+
+    Why: The UI should never crash if SMTP fails; errors should be visible and actionable.
+    """
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = FROM_EMAIL
     msg["To"] = to_email
     msg.set_content(body)
 
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-        smtp.starttls()
-        smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-        smtp.send_message(msg)
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
+            smtp.starttls()
+            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(msg)
+        return True, "Email sent."
+    except Exception as exc:
+        return False, f"Email could not be sent: {exc}"
 
 
-def send_confirmation_email(recipient_email: str, recipient_name: str) -> None:
+def confirmation_email_text(recipient_name: str) -> tuple[str, str]:
+    """Return (subject, body) for a confirmation email."""
     subject = "Issue received!"
     body = f"""Dear {recipient_name},
-
 
 Thank you for contacting us regarding your concern. We hereby confirm that we have received your issue report and that it is currently under review by the responsible team.
 
@@ -162,25 +280,55 @@ Thank you for your understanding and cooperation.
 Kind regards,
 HSG Service Team
 """
-    send_email(recipient_email, subject, body)
+    return subject, body
 
 
-def send_resolved_email(recipient_email: str, recipient_name: str) -> None:
+def resolved_email_text(recipient_name: str) -> tuple[str, str]:
+    """Return (subject, body) for a resolved notification email."""
     subject = "Issue resolved!"
     body = f"""Hello {recipient_name},
 
-We are pleased to inform you that the issue you reported via the HSG Reporting Tool has been successfully resolved.
+We are pleased to inform you that the issue you reported via the HSG Reporting Tool has been resolved.
 
-Should you have any further questions or require additional assistance in the future, please do not hesitate to contact us. We remain at your disposal and will be pleased to assist you.
-
-Thank you for your cooperation.
+If you have further questions or require assistance in the future, please do not hesitate to contact us.
 
 Kind regards,
 HSG Service Team
 """
-    send_email(recipient_email, subject, body)
+    return subject, body
 
 
+# ----------------------------
+# UI helpers
+# ----------------------------
+def show_errors(errors: Iterable[str]) -> None:
+    """Render validation errors consistently across pages."""
+    for msg in errors:
+        st.error(msg)
+
+
+def show_logo() -> None:
+    """Display the logo if present; otherwise show a helpful hint."""
+    try:
+        st.image(LOGO_PATH, use_container_width=True)
+    except Exception:
+        st.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
+
+
+def render_map_iframe() -> None:
+    """Embed MazeMap (optional)."""
+    st.markdown("**Map** (optional)")
+    url = "https://use.mazemap.com/embed.html?v=1&zlevel=1&center=9.373611,47.429708&zoom=14.7&campusid=710"
+    st.markdown(
+        f"""
+        <iframe src="{url}"
+            width="100%" height="420" frameborder="0"
+            marginheight="0" marginwidth="0" scrolling="no"></iframe>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    
 # ----------------------------
 # Pages
 # ----------------------------
@@ -191,90 +339,70 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         name = st.text_input("Name*").strip()
         hsg_email = st.text_input("HSG Email Address*").strip()
 
-        uploaded_file = st.file_uploader("Upload a Photo (optional)", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader(
+            "Upload a Photo (optional)",
+            type=["jpg", "jpeg", "png"],
+        )
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded Photo (not stored)", use_container_width=True)
 
         room_number = st.text_input("Room Number* (e.g., A 09-001)").strip()
-
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
-
         user_comment = st.text_area("Problem Description* (max 500 chars)", max_chars=500).strip()
 
-        # MazeMap embed (Focus on the University of St.Gallen (Campus_ID 710)
-        st.markdown("**Map** (optional)")
-        maze_map_url = "https://use.mazemap.com/embed.html?v=1&zlevel=1&center=9.373611,47.429708&zoom=14.7&campusid=710"
-        st.markdown(
-            f"""
-            <iframe src="{maze_map_url}"
-                width="100%" height="420" frameborder="0"
-                marginheight="0" marginwidth="0" scrolling="no"></iframe>
-            """,
-            unsafe_allow_html=True,
-        )
-
+        render_map_iframe()
         submitted = st.form_submit_button("Submit")
 
     if not submitted:
         return
 
-    # Validation (on submit only)
-    errors = []
-    if not name:
-        errors.append("Name is required.")
-    if not hsg_email:
-        errors.append("HSG Email Address is required.")
-    elif not valid_email(hsg_email):
-        errors.append("Invalid mail address. Please enter your official HSG email (…@unisg.ch or …@student.unisg.ch).")
-    if not room_number:
-        errors.append("Room Number is required.")
-    elif not valid_room_number(room_number):
-        errors.append("Invalid room number format. Please use: 'A 09-001'.")
-    if not user_comment:
-        errors.append("Problem Description is required.")
+    sub = Submission(
+        name=name,
+        hsg_email=hsg_email,
+        issue_type=issue_type,
+        room_number=room_number,
+        importance=importance,
+        user_comment=user_comment,
+    )
 
+    errors = validate_submission_input(sub)
     if errors:
-        for e in errors:
-            st.error(e)
+        show_errors(errors)
         return
 
-    created_at = now_zurich_str()
-    updated_at = created_at
+    insert_submission(con, sub)
 
-    # Insert into DB
-    with con:
-        con.execute(
-            """
-            INSERT INTO submissions
-            (name, hsg_email, issue_type, room_number, importance, status, user_comment, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
-            """,
-            (name, hsg_email, issue_type, room_number, importance, user_comment, created_at, updated_at),
-        )
-
-    # Send email (non-blocking would be nicer, but keep simple & reliable)
-    try:
-        send_confirmation_email(hsg_email, name)
+    # Email is best-effort; submission should still succeed without email.
+    subject, body = confirmation_email_text(sub.name)
+    ok, msg = send_email(sub.hsg_email, subject, body)
+    if ok:
         st.success("Submission successful! A confirmation email was sent.")
-    except Exception as e:
+    else:
         st.success("Submission successful!")
-        st.warning(f"Could not send confirmation email: {e}")
+        st.warning(msg)
 
 
 def page_submitted_issues(con: sqlite3.Connection) -> None:
     st.header("Submitted Issues")
 
-    df = pd.read_sql("SELECT * FROM submissions", con)
+    df = fetch_submissions(con)
     st.subheader(f"Total Issues: {len(df)}")
 
     if df.empty:
         st.info("No submitted issues yet. Please submit an issue first.")
         return
 
-    # Display table
-    display_df = df.copy()
-    display_df = display_df.rename(
+    display_df = build_display_table(df)
+    st.subheader("List of Submitted Issues")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    render_charts(df)
+
+
+def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare a clean, sorted table for the UI (separation of concerns)."""
+    display_df = df.copy().rename(
         columns={
             "id": "ID",
             "name": "NAME",
@@ -289,16 +417,22 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         }
     )
 
-    # Sort: Issue type then importance (High > Medium > Low)
     importance_order = {"High": 0, "Medium": 1, "Low": 2}
-    display_df["_imp_rank"] = display_df["IMPORTANCE"].map(importance_order).fillna(99).astype(int)
-    display_df = display_df.sort_values(by=["ISSUE TYPE", "_imp_rank", "SUBMITTED AT"], ascending=[True, True, False])
-    display_df = display_df.drop(columns=["_imp_rank"])
+    display_df["_imp_rank"] = (
+        display_df["IMPORTANCE"].map(importance_order).fillna(99).astype(int)
+    )
 
-    st.subheader("List of Submitted Issues")
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # Sort by issue type, then importance rank, then newest submissions first.
+    display_df = display_df.sort_values(
+        by=["ISSUE TYPE", "_imp_rank", "SUBMITTED AT"],
+        ascending=[True, True, False],
+    ).drop(columns=["_imp_rank"])
 
-    # Charts
+    return display_df
+
+
+def render_charts(df: pd.DataFrame) -> None:
+    """Render charts from the raw DB data."""
     st.subheader("Number of Issues by Issue Type")
     issue_counts = df["issue_type"].value_counts().sort_index()
     fig, ax = plt.subplots()
@@ -310,8 +444,10 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
     st.subheader("Issues Submitted per Day")
     df_dates = df.copy()
-    df_dates["created_at"] = pd.to_datetime(df_dates["created_at"])
+    df_dates["created_at"] = pd.to_datetime(df_dates["created_at"], errors="coerce")
+    df_dates = df_dates.dropna(subset=["created_at"])
     per_day = df_dates.groupby(df_dates["created_at"].dt.date).size()
+
     fig, ax = plt.subplots()
     ax.bar(per_day.index, per_day.values, width=0.7, align="center")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
@@ -345,16 +481,14 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
         st.warning("Enter the correct password to access this page.")
         return
 
-    df = pd.read_sql("SELECT * FROM submissions", con)
+    df = fetch_submissions(con)
     if df.empty:
         st.info("No submitted issues yet.")
         return
 
-    # Choose issue by ID
-    ids = df["id"].tolist()
-    selected_id = st.selectbox("Select Issue ID to update:", ids)
-
+    selected_id = st.selectbox("Select Issue ID to update:", df["id"].tolist())
     row = df[df["id"] == selected_id].iloc[0]
+
     st.subheader("Selected Issue Details")
     st.write(
         {
@@ -373,44 +507,36 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 
     st.divider()
 
-    # Editable fields
-    name_input = st.text_input("Name", value=str(row["name"]))
-    email_input = st.text_input("HSG Email Address", value=str(row["hsg_email"]))
-    new_status = st.selectbox("New Status", STATUS_LEVELS, index=STATUS_LEVELS.index(row["status"]) if row["status"] in STATUS_LEVELS else 0)
+    # Keep admin scope minimal: update status only (prevents accidental data edits).
+    new_status = st.selectbox(
+        "New Status",
+        STATUS_LEVELS,
+        index=STATUS_LEVELS.index(row["status"]) if row["status"] in STATUS_LEVELS else 0,
+    )
 
     confirm_resolve = True
     if new_status == "Resolved":
-        confirm_resolve = st.checkbox("I confirm the issue is resolved (and an email will be sent).", value=False)
+        confirm_resolve = st.checkbox(
+            "I confirm the issue is resolved (and an email will be sent).",
+            value=False,
+        )
 
     if st.button("Update Status"):
-        if not email_input.strip() or not valid_email(email_input):
-            st.error("Please provide a valid HSG email address before updating.")
-            return
-
         if new_status == "Resolved" and not confirm_resolve:
             st.error("Please confirm resolution before setting status to Resolved.")
             return
 
-        updated_at = now_zurich_str()
+        update_issue_status(con, int(selected_id), new_status)
 
-        # Send resolved email if needed
+        # Notify only when resolved (best effort).
         if new_status == "Resolved":
-            try:
-                send_resolved_email(email_input.strip(), name_input.strip() or "there")
-                st.success("Resolved email sent.")
-            except Exception as e:
-                st.warning(f"Could not send resolved email: {e}")
-
-        # Update DB
-        with con:
-            con.execute(
-                """
-                UPDATE submissions
-                SET status = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (new_status, updated_at, int(selected_id)),
-            )
+            email_errors = validate_admin_email(str(row["hsg_email"]))
+            if email_errors:
+                show_errors(email_errors)
+            else:
+                subject, body = resolved_email_text(str(row["name"]).strip() or "there")
+                ok, msg = send_email(str(row["hsg_email"]).strip(), subject, body)
+                (st.success(msg) if ok else st.warning(msg))
 
         st.success("Status updated successfully.")
         st.rerun()
@@ -421,19 +547,12 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 # ----------------------------
 def main() -> None:
     st.set_page_config(page_title="HSG Reporting Tool", layout="centered")
-
-    # Logo
-    try:
-        st.image(LOGO_PATH, use_container_width=True)
-    except Exception:
-        st.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
+    show_logo()
 
     con = get_connection()
     init_db(con)
-    migrate_db(con)
 
     st.title("HSG Reporting Tool")
-
     page = st.sidebar.radio("Select Page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
 
     if page == "Submission Form":
