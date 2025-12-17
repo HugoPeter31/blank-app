@@ -5,7 +5,7 @@
 # It is even possible for the facility management team to overwrite the status of the submitted issues. 
 
 # Information just for Facility Management Team: 
-# The Password for the third page "Overwrite Status" is PleaseOpen! (see line 336XXXXXX)
+# The Password for the third page "Overwrite Status" is PleaseOpen! 
 
 import re # Added for validation
 import sqlite3 # Added for database
@@ -129,12 +129,15 @@ def send_confirmation_email(recipient_email: str, recipient_name: str) -> None:
     subject = "Issue received!"
     body = f"""Dear {recipient_name},
 
-Thank you for reaching out to us with your concerns. We confirm that we have received your issue report and are reviewing it.
 
-We will keep you updated on our progress and notify you as soon as your issue has been resolved.
+Thank you for contacting us regarding your concern. We hereby confirm that we have received your issue report and that it is currently under review by the responsible team.
 
-Best regards,
-Your HSG Service Team
+We will keep you informed about the progress and notify you once the matter has been resolved. Should we require any additional information, we will contact you accordingly.
+
+Thank you for your understanding and cooperation.
+
+Kind regards,
+HSG Service Team
 """
     send_email(recipient_email, subject, body)
 
@@ -143,13 +146,14 @@ def send_resolved_email(recipient_email: str, recipient_name: str) -> None:
     subject = "Issue resolved!"
     body = f"""Hello {recipient_name},
 
-Great news!
-The issue you reported via the HSG Reporting Tool has been resolved.
+We are pleased to inform you that the issue you reported via the HSG Reporting Tool has been successfully resolved.
 
-If you have further questions or encounter new issues, please do not hesitate to reach out again.
+Should you have any further questions or require additional assistance in the future, please do not hesitate to contact us. We remain at your disposal and will be pleased to assist you.
 
-Best regards,
-Your HSG Service Team
+Thank you for your cooperation.
+
+Kind regards,
+HSG Service Team
 """
     send_email(recipient_email, subject, body)
 
