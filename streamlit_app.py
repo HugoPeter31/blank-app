@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re # for validation
 import sqlite3 # for database
+from dataclasses import dataclass
 from datetime import datetime # for the timestamps
 from email.message import EmailMessage
 from typing import Iterable
