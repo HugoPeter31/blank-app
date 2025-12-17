@@ -89,6 +89,22 @@ def init_db(con: sqlite3.Connection) -> None:
     )
     con.commit()
 
+def migrate_db(con: sqlite3.Connection) -> None:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
+
+    if "created_at" not in cols:
+        con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
+        con.execute(
+            "UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+        )
+
+    if "updated_at" not in cols:
+        con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
+        con.execute(
+            "UPDATE submissions SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"
+        )
+
+    con.commit()
 
 def now_zurich_str() -> str:
     return datetime.now(APP_TZ).strftime("%Y-%m-%d %H:%M:%S")
