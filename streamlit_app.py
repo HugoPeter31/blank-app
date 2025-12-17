@@ -208,6 +208,22 @@ def init_db(con: sqlite3.Connection) -> None:
         )
         """
     )
+
+    # Added: Audit log table for status changes (who/when/what changed).
+    # Why: Status updates should be traceable (professional admin workflow).
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS status_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER NOT NULL,
+            old_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            FOREIGN KEY (submission_id) REFERENCES submissions(id)
+        )
+        """
+    )
+
     con.commit()
 
 
@@ -229,6 +245,20 @@ def migrate_db(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
         con.execute("UPDATE submissions SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
 
+    # Ensure audit-log table exists for older DBs as well.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS status_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER NOT NULL,
+            old_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            FOREIGN KEY (submission_id) REFERENCES submissions(id)
+        )
+        """
+    )
+
     con.commit()
 
 
@@ -237,10 +267,29 @@ def fetch_submissions(con: sqlite3.Connection) -> pd.DataFrame:
     return pd.read_sql("SELECT * FROM submissions", con)
 
 
+def fetch_status_log(con: sqlite3.Connection) -> pd.DataFrame:
+    """Fetch status-change audit logs as a DataFrame."""
+    return pd.read_sql(
+        """
+        SELECT submission_id, old_status, new_status, changed_at
+        FROM status_log
+        ORDER BY changed_at DESC
+        """,
+        con,
+    )
+
+
 def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
     """Insert a validated submission into the database."""
     created_at = now_zurich_str()
     updated_at = created_at
+
+    # Added: Normalize inputs before storing.
+    # Why: Normalization avoids inconsistent duplicates (e.g., uppercase/lowercase differences).
+    normalized_name = sub.name.strip()
+    normalized_email = sub.hsg_email.strip().lower()
+    normalized_room = sub.room_number.strip().upper()
+    normalized_comment = sub.user_comment.strip()
 
     with con:
         con.execute(
@@ -250,12 +299,12 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
             VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
             """,
             (
-                sub.name.strip(),
-                sub.hsg_email.strip(),
+                normalized_name,
+                normalized_email,
                 sub.issue_type,
-                sub.room_number.strip(),
+                normalized_room,
                 sub.importance,
-                sub.user_comment.strip(),
+                normalized_comment,
                 created_at,
                 updated_at,
             ),
@@ -273,6 +322,23 @@ def update_issue_status(con: sqlite3.Connection, issue_id: int, new_status: str)
             WHERE id = ?
             """,
             (new_status, updated_at, int(issue_id)),
+        )
+
+
+def log_status_change(con: sqlite3.Connection, submission_id: int, old_status: str, new_status: str) -> None:
+    """
+    Write an audit-log entry for a status change.
+
+    Why: Admin changes should be traceable for accountability and debugging.
+    """
+    changed_at = now_zurich_str()
+    with con:
+        con.execute(
+            """
+            INSERT INTO status_log (submission_id, old_status, new_status, changed_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (int(submission_id), old_status, new_status, changed_at),
         )
 
 
@@ -408,11 +474,16 @@ def page_submission_form(con: sqlite3.Connection) -> None:
     if not submitted:
         return
 
+    # Added: Normalize inputs early to ensure consistent validation + storage.
+    # Why: Users often enter different casing; normalization prevents accidental mismatches.
+    normalized_email = hsg_email.strip().lower()
+    normalized_room = room_number.strip().upper()
+
     sub = Submission(
         name=name,
-        hsg_email=hsg_email,
+        hsg_email=normalized_email,
         issue_type=issue_type,
-        room_number=room_number,
+        room_number=normalized_room,
         importance=importance,
         user_comment=user_comment,
     )
@@ -425,7 +496,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
     insert_submission(con, sub)
 
     # Email is best-effort; submission should still succeed without email.
-    subject, body = confirmation_email_text(sub.name)
+    subject, body = confirmation_email_text(sub.name.strip())
     ok, msg = send_email(sub.hsg_email, subject, body)
     if ok:
         st.success("Submission successful! A confirmation email was sent.")
@@ -444,10 +515,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.info("No submitted issues yet. Please submit an issue first.")
         return
 
-    # ----------------------------
-    # Added: Status filter (as requested)
+    # Added: Status filter
     # Why: Makes the table and charts more useful for users and admins.
-    # ----------------------------
     status_filter = st.multiselect(
         "Filter by status",
         options=STATUS_LEVELS,
@@ -463,7 +532,26 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     st.subheader("List of Submitted Issues")
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+    # Added: CSV export
+    # Why: Enables offline reporting and makes the tool practical for a real facility team workflow.
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download CSV",
+        data=csv_bytes,
+        file_name="hsg_reporting_issues.csv",
+        mime="text/csv",
+    )
+
     render_charts(df)
+
+    # Added: Optional audit-log view on this page (read-only).
+    # Why: Demonstrates traceability and professional admin processes.
+    with st.expander("Show status change audit log"):
+        log_df = fetch_status_log(con)
+        if log_df.empty:
+            st.info("No status changes recorded yet.")
+        else:
+            st.dataframe(log_df, use_container_width=True, hide_index=True)
 
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -509,10 +597,8 @@ def render_charts(df: pd.DataFrame) -> None:
     ax.set_ylabel("Issue Type")
     st.pyplot(fig)
 
-    # ----------------------------
-    # Updated: Time-series chart (plot + fill missing days) as requested
+    # Updated: Time-series chart (plot + fill missing days)
     # Why: A continuous date range makes trends visible and avoids misleading gaps.
-    # ----------------------------
     st.subheader("Issues Submitted per Day")
     df_dates = df.copy()
     df_dates["created_at"] = pd.to_datetime(df_dates["created_at"], errors="coerce")
@@ -571,6 +657,19 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
         st.info("No submitted issues yet.")
         return
 
+    # Added: Status filter for admin page
+    # Why: Admins typically work on open issues; filtering improves usability and reduces errors.
+    admin_status_filter = st.multiselect(
+        "Show issues with status",
+        options=STATUS_LEVELS,
+        default=["Pending", "In Progress"],
+    )
+    df = df[df["status"].isin(admin_status_filter)]
+
+    if df.empty:
+        st.info("No issues match the selected admin status filter.")
+        return
+
     selected_id = st.selectbox("Select Issue ID to update:", df["id"].tolist())
     row = df[df["id"] == selected_id].iloc[0]
 
@@ -611,7 +710,13 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
             st.error("Please confirm resolution before setting status to Resolved.")
             return
 
+        old_status = str(row["status"])
         update_issue_status(con, int(selected_id), new_status)
+
+        # Added: Audit log for status changes
+        # Why: Provides traceability and accountability for admin actions.
+        if new_status != old_status:
+            log_status_change(con, int(selected_id), old_status, new_status)
 
         # Notify only when resolved (best effort).
         if new_status == "Resolved":
@@ -636,7 +741,7 @@ def main() -> None:
 
     con = get_connection()
     init_db(con)
-    migrate_db(con)  # Added: keeps existing/older DB files compatible with this version of the app
+    migrate_db(con)  # keeps existing/older DB files compatible with this version of the app
 
     st.title("HSG Reporting Tool")
     page = st.sidebar.radio("Select Page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
