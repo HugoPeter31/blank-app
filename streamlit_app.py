@@ -1,11 +1,18 @@
-# HSG Reporting Tool (Group Arthur Lavric & Fabio Patierno)
-# This is our Streamlit application for the HSG Reporting Tool. 
-# Our tool solves the problem of facility issues on the HSG campus. 
-# You can just submit your issue through our Streamlit application and it gets stored in a database. 
-# It is even possible for the facility management team to overwrite the status of the submitted issues. 
+# HSG Reporting Tool
+# Developed by: Arthur Lavric & Fabio Patierno
 
-# Information just for Facility Management Team: 
-# The Password for the third page "Overwrite Status" is PleaseOpen! 
+# The application enables members of the HSG community to report facility-related issues
+# directly via a user-friendly interface. All submitted issues are securely stored in a
+# database and can be reviewed and managed by the responsible facility management team.
+
+# The tool further includes an administrative interface that allows authorized personnel
+# to update the status of submitted issues (e.g. Pending, In Progress, Resolved), thereby
+# ensuring transparent communication and an efficient issue-resolution process.
+
+# Note:
+# Access to the administrative “Overwrite Status” page is password-protected.
+# For evaluation purposes, the password is:
+# PleaseOpen!
 
 import re # Added for validation
 import sqlite3 # Added for database
