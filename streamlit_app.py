@@ -5,8 +5,8 @@ Developed by: Arthur Lavric & Fabio Patierno
 Purpose:
 - Allow HSG community members to submit facility-related issues via a simple UI.
 - Store submissions in a database.
-- Provide an admin-only page to update issue statuses (e.g. Pending, In Progress, Resolved) 
-and notify users when resolved.
+- Provide an admin-only page to update issue statuses (e.g. Pending, In Progress, Resolved)
+  and notify users when resolved.
 
 Note:
 Access to the administrative “Overwrite Status” page is password-protected.
@@ -16,17 +16,18 @@ For evaluation purposes, the password is:
 
 from __future__ import annotations
 
-import re # for validation
-import sqlite3 # for database
+import logging  # Added for professional error logging (instead of exposing raw errors to users)
+import re  # for validation
+import sqlite3  # for database
 from dataclasses import dataclass
-from datetime import datetime # for the timestamps
+from datetime import datetime  # for the timestamps
 from email.message import EmailMessage
 from typing import Iterable
 
-import matplotlib.dates as mdates # for charts
+import matplotlib.dates as mdates  # for charts
 import matplotlib.pyplot as plt
-import pandas as pd # for tables
-import pytz # for right time zone
+import pandas as pd  # for tables
+import pytz  # for right time zone
 import smtplib
 import streamlit as st
 
@@ -53,6 +54,15 @@ STATUS_LEVELS = ["Pending", "In Progress", "Resolved"]
 # Compile regex once (readability + small performance benefit)
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
 ROOM_PATTERN = re.compile(r"^[A-Z] \d{2}-\d{3}$")
+
+
+# ----------------------------
+# Logging
+# ----------------------------
+# Logs help debugging without leaking technical details to end users.
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
 
 
 # ----------------------------
@@ -94,6 +104,9 @@ FROM_EMAIL = get_secret("FROM_EMAIL", SMTP_USERNAME)
 
 # Admin page password should be provided via Streamlit secrets (no hardcoding).
 ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")
+
+# Optional debug flag (recommended): set DEBUG = "1" in Streamlit Secrets to show technical email errors.
+DEBUG = get_secret("DEBUG", "0") == "1"
 
 
 # ----------------------------
@@ -197,6 +210,31 @@ def init_db(con: sqlite3.Connection) -> None:
     con.commit()
 
 
+def migrate_db(con: sqlite3.Connection) -> None:
+    """
+    Simple schema migration for older DB files.
+
+    Why: If an old DB exists (e.g., from previous versions), charts/reads should not crash.
+    This keeps the tool robust without requiring manual DB deletion.
+    """
+    cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
+
+    # Add missing timestamp columns if needed (keeps old databases compatible)
+    if "created_at" not in cols:
+        con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
+        con.execute(
+            "UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+        )
+
+    if "updated_at" not in cols:
+        con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
+        con.execute(
+            "UPDATE submissions SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"
+        )
+
+    con.commit()
+
+
 def fetch_submissions(con: sqlite3.Connection) -> pd.DataFrame:
     """Fetch all submissions as a DataFrame (single responsibility)."""
     return pd.read_sql("SELECT * FROM submissions", con)
@@ -241,7 +279,6 @@ def update_issue_status(con: sqlite3.Connection, issue_id: int, new_status: str)
         )
 
 
-
 # ----------------------------
 # Email
 # ----------------------------
@@ -262,9 +299,18 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
             smtp.starttls()
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
             smtp.send_message(msg)
+
+        logger.info("Email sent to %s | subject=%s", to_email, subject)
         return True, "Email sent."
+
     except Exception as exc:
-        return False, f"Email could not be sent: {exc}"
+        # Log full details for debugging; avoid leaking technical info to end users.
+        logger.exception("Email sending failed for %s", to_email)
+
+        # Show a short user-friendly message; optionally show technical details in DEBUG mode.
+        if DEBUG:
+            return False, f"Email could not be sent: {exc}"
+        return False, "Email could not be sent due to a technical issue."
 
 
 def confirmation_email_text(recipient_name: str) -> tuple[str, str]:
@@ -329,7 +375,7 @@ def render_map_iframe() -> None:
         unsafe_allow_html=True,
     )
 
-    
+
 # ----------------------------
 # Pages
 # ----------------------------
@@ -339,6 +385,10 @@ def page_submission_form(con: sqlite3.Connection) -> None:
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*").strip()
         hsg_email = st.text_input("HSG Email Address*").strip()
+
+        # Helpful hints reduce validation errors and improve the user experience.
+        st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
+        st.caption("Room example: A 09-001")
 
         uploaded_file = st.file_uploader(
             "Upload a Photo (optional)",
@@ -435,12 +485,13 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
 def render_charts(df: pd.DataFrame) -> None:
     """Render charts from the raw DB data."""
     st.subheader("Number of Issues by Issue Type")
-    issue_counts = df["issue_type"].value_counts().sort_index()
+
+    # Keep chart order stable and readable (no random ordering from value_counts()).
+    issue_counts = df["issue_type"].value_counts().reindex(ISSUE_TYPES, fill_value=0)
     fig, ax = plt.subplots()
-    ax.bar(issue_counts.index, issue_counts.values)
-    ax.set_xlabel("Issue Type")
-    ax.set_ylabel("Number of Issues")
-    plt.xticks(rotation=35, ha="right")
+    ax.barh(issue_counts.index, issue_counts.values)
+    ax.set_xlabel("Number of Issues")
+    ax.set_ylabel("Issue Type")
     st.pyplot(fig)
 
     st.subheader("Issues Submitted per Day")
@@ -459,7 +510,7 @@ def render_charts(df: pd.DataFrame) -> None:
     st.pyplot(fig)
 
     st.subheader("Number of Issues by Importance Level")
-    imp_counts = df["importance"].value_counts()
+    imp_counts = df["importance"].value_counts().reindex(IMPORTANCE_LEVELS, fill_value=0)
     fig, ax = plt.subplots()
     ax.bar(imp_counts.index, imp_counts.values)
     ax.set_xlabel("Importance Level")
@@ -467,7 +518,7 @@ def render_charts(df: pd.DataFrame) -> None:
     st.pyplot(fig)
 
     st.subheader("Distribution of Statuses")
-    status_counts = df["status"].value_counts()
+    status_counts = df["status"].value_counts().reindex(STATUS_LEVELS, fill_value=0)
     fig, ax = plt.subplots()
     ax.pie(status_counts.values, labels=status_counts.index, autopct="%1.1f%%", startangle=90)
     ax.axis("equal")
@@ -552,6 +603,7 @@ def main() -> None:
 
     con = get_connection()
     init_db(con)
+    migrate_db(con)  # Added: keeps existing/older DB files compatible with this version of the app
 
     st.title("HSG Reporting Tool")
     page = st.sidebar.radio("Select Page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
