@@ -423,6 +423,7 @@ def main() -> None:
 
     con = get_connection()
     init_db(con)
+    migrate_db(con)
 
     st.title("HSG Reporting Tool")
 
