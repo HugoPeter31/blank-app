@@ -1,6 +1,6 @@
-# 🎈 Blank app template
+# Programming with Advanced Computer Languages - Group Project
 
-A simple Streamlit app template for you to modify!
+We will focus on making a facility management tool for HSG students.
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
 
