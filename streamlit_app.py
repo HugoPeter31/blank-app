@@ -448,6 +448,13 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     st.header("Submitted Issues")
 
     df = fetch_submissions(con)
+    status_filter = st.multiselect(
+        "Filter by status",
+        options=STATUS_LEVELS,
+        default=STATUS_LEVELS,
+    )
+    df = df[df["status"].isin(status_filter)]
+
     st.subheader(f"Total Issues: {len(df)}")
 
     if df.empty:
