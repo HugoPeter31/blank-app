@@ -1033,7 +1033,7 @@ def main() -> None:
     show_logo()
 
     st.image(
-        "campus_header.jpg",
+        "campus_header.jpeg",
         caption="University of St. Gallen – Campus",
         use_container_width=True,
     )
