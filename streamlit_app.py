@@ -648,10 +648,18 @@ def show_errors(errors: Iterable[str]) -> None:
     for msg in errors:
         st.error(msg)
 
+
 def show_logo() -> None:
     """Display the HSG logo in the sidebar (compact branding)."""
     try:
-        st.sidebar.image(LOGO_PATH, width=120)  # smaller logo in sidebar
+        st.sidebar.markdown(
+            """
+            <div style="display:flex; justify-content:center; padding-top:6px; padding-bottom:10px;">
+            """,
+            unsafe_allow_html=True,
+        )
+        st.sidebar.image(LOGO_PATH, width=170) 
+        st.sidebar.markdown("</div>", unsafe_allow_html=True)
     except Exception:
         st.sidebar.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
 
