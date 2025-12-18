@@ -1032,10 +1032,10 @@ def main() -> None:
     st.set_page_config(page_title="HSG Reporting Tool", layout="centered")
     def show_logo() -> None:
     """Display the HSG logo in the sidebar (compact branding)."""
-    try:
-        st.sidebar.image(LOGO_PATH, width=120)
-    except Exception:
-        st.sidebar.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
+      try:
+          st.sidebar.image(LOGO_PATH, width=120)
+      except Exception:
+          st.sidebar.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
 
     st.image(
         "campus_header.jpeg",
