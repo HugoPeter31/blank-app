@@ -648,13 +648,12 @@ def show_errors(errors: Iterable[str]) -> None:
     for msg in errors:
         st.error(msg)
 
-
 def show_logo() -> None:
-    """Display the logo if present; otherwise show a helpful hint."""
+    """Display the HSG logo in the sidebar (compact branding)."""
     try:
-        st.image(LOGO_PATH, use_container_width=True)
+        st.sidebar.image(LOGO_PATH, width=120)  # smaller logo in sidebar
     except Exception:
-        st.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
+        st.sidebar.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
 
 
 def render_map_iframe() -> None:
@@ -1030,12 +1029,8 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 # ----------------------------
 def main() -> None:
     st.set_page_config(page_title="HSG Reporting Tool", layout="centered")
-    def show_logo() -> None:
-      """Display the HSG logo in the sidebar (compact branding)."""
-      try:
-          st.sidebar.image(LOGO_PATH, width=120)
-      except Exception:
-          st.sidebar.info("Logo not found. Add 'HSG-logo-new.png' to the repository root.")
+
+    show_logo() 
 
     st.image(
         "campus_header.jpeg",
