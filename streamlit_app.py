@@ -1032,6 +1032,12 @@ def main() -> None:
     st.set_page_config(page_title="HSG Reporting Tool", layout="centered")
     show_logo()
 
+    st.image(
+        "campus_header.jpg",
+        caption="University of St. Gallen – Campus",
+        use_container_width=True,
+    )
+    
     con = get_connection()
     init_db(con)
     migrate_db(con)  # keeps existing/older DB files compatible with this version of the app
