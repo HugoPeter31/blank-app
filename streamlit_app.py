@@ -1,5 +1,5 @@
 """
-HSG Reporting Tool (Streamlit)
+HSG Reporting Tool (via Streamlit)
 Developed by: Arthur Lavric & Fabio Patierno
 
 Purpose:
@@ -16,11 +16,11 @@ For evaluation purposes, the password is:
 
 from __future__ import annotations
 
-import logging  # Added for professional error logging (instead of exposing raw errors to users)
+import logging  # Added for professional error logging
 import re  # for validation
 import sqlite3  # for database
 from dataclasses import dataclass
-from datetime import datetime  # for the timestamps
+from datetime import datetime, timedelta  # Timedelta for SLA and reporting windows
 from email.message import EmailMessage
 from typing import Iterable
 
@@ -51,7 +51,13 @@ ISSUE_TYPES = [
 IMPORTANCE_LEVELS = ["Low", "Medium", "High"]
 STATUS_LEVELS = ["Pending", "In Progress", "Resolved"]
 
-# Compile regex once (readability + small performance benefit)
+# SLA definition (expected resolution time per importance level).
+SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
+    "High": 24,     # 1 day
+    "Medium": 72,   # 3 days
+    "Low": 120,     # 5 days
+}
+
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
 ROOM_PATTERN = re.compile(r"^[A-Z] \d{2}-\d{3}$")
 
@@ -59,7 +65,7 @@ ROOM_PATTERN = re.compile(r"^[A-Z] \d{2}-\d{3}$")
 # ----------------------------
 # Logging
 # ----------------------------
-# Logs help debugging without leaking technical details to end users.
+# Help debugging without leaking technical details to end users.
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
@@ -85,8 +91,6 @@ class Submission:
 def get_secret(key: str, default: str | None = None) -> str:
     """
     Read a Streamlit secret key. If missing, stop early with a helpful error.
-
-    Why: Missing secrets cause confusing runtime failures (e.g., SMTP login errors).
     """
     if key in st.secrets:
         return str(st.secrets[key])
@@ -103,27 +107,55 @@ SMTP_PASSWORD = get_secret("SMTP_PASSWORD")
 FROM_EMAIL = get_secret("FROM_EMAIL", SMTP_USERNAME)
 ADMIN_INBOX = get_secret("ADMIN_INBOX", FROM_EMAIL)
 
-# Admin page password should be provided via Streamlit secrets (no hardcoding).
 ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")
 
-# Optional debug flag (recommended): set DEBUG = "1" in Streamlit Secrets to show technical email errors.
 DEBUG = get_secret("DEBUG", "0") == "1"
+
+# ASSIGNEES = "Facility Team,IT Support,Housekeeping,HLK Team"
+ASSIGNEES_RAW = get_secret("ASSIGNEES", "Facility Team")
+ASSIGNEES = [a.strip() for a in ASSIGNEES_RAW.split(",") if a.strip()]
+
+# Weekly auto report (best-effort) configuration.
+AUTO_WEEKLY_REPORT = get_secret("AUTO_WEEKLY_REPORT", "0") == "1"
+REPORT_WEEKDAY = int(get_secret("REPORT_WEEKDAY", "0"))
+REPORT_HOUR = int(get_secret("REPORT_HOUR", "7"))
 
 
 # ----------------------------
 # Time helpers
 # ----------------------------
+def now_zurich() -> datetime:
+    """Return current Zurich time as timezone-aware datetime."""
+    return datetime.now(APP_TZ)
+
+
 def now_zurich_str() -> str:
     """
     Return an unambiguous timestamp (ISO 8601) including timezone offset.
-
-    Why: Avoids confusion and parsing errors across environments and daylight saving changes.
+    (Avoids confusion and parsing errors across environments and daylight saving changes.)
     """
-    return datetime.now(APP_TZ).isoformat(timespec="seconds")
+    return now_zurich().isoformat(timespec="seconds")
+
+
+def iso_to_dt(value: str) -> datetime | None:
+    """Parse ISO datetime string safely. Returns None on invalid input."""
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
+    """Compute expected resolution datetime from created_at + SLA."""
+    created_dt = iso_to_dt(created_at_iso)
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+    if created_dt is None or sla_hours is None:
+        return None
+    return created_dt + timedelta(hours=int(sla_hours))
 
 
 # ----------------------------
-# Validation: Check whether the specified email address complies with the requirements of an official HSG mail address
+# Validation
 # ----------------------------
 def valid_email(hsg_email: str) -> bool:
     """Return True if the email is an official HSG address."""
@@ -138,8 +170,7 @@ def valid_room_number(room_number: str) -> bool:
 def validate_submission_input(sub: Submission) -> list[str]:
     """
     Validate user inputs and return human-readable error messages.
-
-    Why: The UI should guide the user to correct inputs rather than crashing with exceptions.
+    (The UI should guide the user to correct inputs rather than crashing with exceptions.)
     """
     errors: list[str] = []
 
@@ -184,14 +215,12 @@ def validate_admin_email(email: str) -> list[str]:
 def get_connection() -> sqlite3.Connection:
     """
     Create and cache a SQLite connection for Streamlit.
-
-    Why: Streamlit reruns scripts often; caching prevents re-opening connections unnecessarily.
     """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def init_db(con: sqlite3.Connection) -> None:
-    """Create the required table if it does not exist."""
+    """Create the required tables if they do not exist."""
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS submissions (
@@ -204,13 +233,16 @@ def init_db(con: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'Pending',
             user_comment TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+
+            -- Added: assignment + resolution tracking
+            assigned_to TEXT,
+            resolved_at TEXT
         )
         """
     )
 
-    # Added: Audit log table for status changes (who/when/what changed).
-    # Why: Status updates should be traceable (professional admin workflow).
+    # Audit log table for status changes (who/when/what changed).
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS status_log (
@@ -224,15 +256,25 @@ def init_db(con: sqlite3.Connection) -> None:
         """
     )
 
+    # Report log to prevent repeated “auto weekly” sends.
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_type TEXT NOT NULL,
+            sent_at TEXT NOT NULL
+        )
+        """
+    )
+
     con.commit()
 
 
 def migrate_db(con: sqlite3.Connection) -> None:
     """
     Simple schema migration for older DB files.
-
-    Why: If an old DB exists (e.g., from previous versions), charts/reads should not crash.
-    This keeps the tool robust without requiring manual DB deletion.
+    (If an old DB exists (e.g., from previous versions), charts/reads should not crash.
+    This keeps the tool robust without requiring manual DB deletion.)
     """
     cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
 
@@ -245,6 +287,13 @@ def migrate_db(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
         con.execute("UPDATE submissions SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
 
+    # Added columns for new features (keep old DB compatible)
+    if "assigned_to" not in cols:
+        con.execute("ALTER TABLE submissions ADD COLUMN assigned_to TEXT")
+
+    if "resolved_at" not in cols:
+        con.execute("ALTER TABLE submissions ADD COLUMN resolved_at TEXT")
+
     # Ensure audit-log table exists for older DBs as well.
     con.execute(
         """
@@ -255,6 +304,17 @@ def migrate_db(con: sqlite3.Connection) -> None:
             new_status TEXT NOT NULL,
             changed_at TEXT NOT NULL,
             FOREIGN KEY (submission_id) REFERENCES submissions(id)
+        )
+        """
+    )
+
+    # Ensure report log exists
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_type TEXT NOT NULL,
+            sent_at TEXT NOT NULL
         )
         """
     )
@@ -279,13 +339,27 @@ def fetch_status_log(con: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
+def fetch_report_log(con: sqlite3.Connection, report_type: str) -> pd.DataFrame:
+    """Fetch report log entries for a given report type."""
+    return pd.read_sql(
+        """
+        SELECT report_type, sent_at
+        FROM report_log
+        WHERE report_type = ?
+        ORDER BY sent_at DESC
+        """,
+        con,
+        params=(report_type,),
+    )
+
+
 def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
     """Insert a validated submission into the database."""
     created_at = now_zurich_str()
     updated_at = created_at
 
-    # Added: Normalize inputs before storing.
-    # Why: Normalization avoids inconsistent duplicates (e.g., uppercase/lowercase differences).
+    # Normalize inputs before storing.
+    # (Normalization avoids inconsistent duplicates (e.g., uppercase/lowercase differences).)
     normalized_name = sub.name.strip()
     normalized_email = sub.hsg_email.strip().lower()
     normalized_room = sub.room_number.strip().upper()
@@ -295,8 +369,8 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
         con.execute(
             """
             INSERT INTO submissions
-            (name, hsg_email, issue_type, room_number, importance, status, user_comment, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
+            (name, hsg_email, issue_type, room_number, importance, status, user_comment, created_at, updated_at, assigned_to, resolved_at)
+            VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, NULL, NULL)
             """,
             (
                 normalized_name,
@@ -311,25 +385,10 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
         )
 
 
-def update_issue_status(con: sqlite3.Connection, issue_id: int, new_status: str) -> None:
-    """Update status and timestamp in the database."""
-    updated_at = now_zurich_str()
-    with con:
-        con.execute(
-            """
-            UPDATE submissions
-            SET status = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (new_status, updated_at, int(issue_id)),
-        )
-
-
 def log_status_change(con: sqlite3.Connection, submission_id: int, old_status: str, new_status: str) -> None:
     """
     Write an audit-log entry for a status change.
-
-    Why: Admin changes should be traceable for accountability and debugging.
+    (Admin changes should be traceable for accountability and debugging.)
     """
     changed_at = now_zurich_str()
     with con:
@@ -339,6 +398,68 @@ def log_status_change(con: sqlite3.Connection, submission_id: int, old_status: s
             VALUES (?, ?, ?, ?)
             """,
             (int(submission_id), old_status, new_status, changed_at),
+        )
+
+
+def update_issue_admin_fields(
+    con: sqlite3.Connection,
+    issue_id: int,
+    new_status: str,
+    assigned_to: str | None,
+    old_status: str,
+) -> None:
+    """
+    Update admin-managed fields (status + assignment) in one transaction.
+    (Keeps DB consistent (status update + audit log should either both happen or none).)
+    """
+    updated_at = now_zurich_str()
+
+    # If first time resolving: store resolved_at. If later status changes away from resolved,
+    # we keep resolved_at for analytics/history (professional audit behavior).
+    set_resolved_at = (new_status == "Resolved")
+
+    with con:
+        # Update status/assignment
+        con.execute(
+            """
+            UPDATE submissions
+            SET status = ?,
+                updated_at = ?,
+                assigned_to = ?,
+                resolved_at = CASE
+                    WHEN ? = 1 AND (resolved_at IS NULL OR resolved_at = '') THEN ?
+                    ELSE resolved_at
+                END
+            WHERE id = ?
+            """,
+            (
+                new_status,
+                updated_at,
+                (assigned_to.strip() if assigned_to and assigned_to.strip() else None),
+                1 if set_resolved_at else 0,
+                updated_at,
+                int(issue_id),
+            ),
+        )
+
+        # Audit log only when status actually changes
+        if new_status != old_status:
+            con.execute(
+                """
+                INSERT INTO status_log (submission_id, old_status, new_status, changed_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (int(issue_id), old_status, new_status, updated_at),
+            )
+
+
+def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
+    """Record that a report was sent."""
+    sent_at = now_zurich_str()
+    with con:
+        con.execute(
+            "INSERT INTO report_log (report_type, sent_at) VALUES (?, ?)",
+            (report_type, sent_at),
         )
 
 
@@ -360,7 +481,7 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
     msg.set_content(body)
 
     # BCC is not added to the headers, only to the SMTP recipient list
-    recipients = [to_email, ADMIN_INBOX]
+    recipients = [to_email] + ([ADMIN_INBOX] if ADMIN_INBOX else [])
 
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
@@ -379,16 +500,53 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
         return False, "Email could not be sent due to a technical issue."
 
 
-def confirmation_email_text(recipient_name: str) -> tuple[str, str]:
-    """Return (subject, body) for a confirmation email."""
+def send_admin_report_email(subject: str, body: str) -> tuple[bool, str]:
+    """
+    Send a report email to the admin inbox (no user recipient).
+    (Reports should go to the responsible team only.)
+    """
+    if not ADMIN_INBOX:
+        return False, "ADMIN_INBOX is not configured."
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = FROM_EMAIL
+    msg["To"] = ADMIN_INBOX
+    msg.set_content(body)
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
+            smtp.starttls()
+            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.send_message(msg, to_addrs=[ADMIN_INBOX])
+
+        logger.info("Admin report email sent | to=%s | subject=%s", ADMIN_INBOX, subject)
+        return True, "Report email sent."
+    except Exception as exc:
+        logger.exception("Report email sending failed")
+        if DEBUG:
+            return False, f"Report email could not be sent: {exc}"
+        return False, "Report email could not be sent due to a technical issue."
+
+
+def confirmation_email_text(recipient_name: str, importance: str) -> tuple[str, str]:
+    """Return (subject, body) for a confirmation email (includes SLA expectation)."""
     subject = "Issue received!"
+
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+    sla_text = (
+        f"Expected handling time (SLA): within {sla_hours} hours."
+        if sla_hours is not None
+        else "Expected handling time (SLA): n/a."
+    )
+
     body = f"""Dear {recipient_name},
 
 Thank you for contacting us regarding your concern. We hereby confirm that we have received your issue report and that it is currently under review by the responsible team.
 
-We will keep you informed about the progress and notify you once the matter has been resolved. Should we require any additional information, we will contact you accordingly.
+{sla_text}
 
-Thank you for your understanding and cooperation.
+We will keep you informed about the progress and notify you once the matter has been resolved. Should we require any additional information, we will contact you accordingly.
 
 Kind regards,
 HSG Service Team
@@ -409,6 +567,77 @@ Kind regards,
 HSG Service Team
 """
     return subject, body
+
+
+# ----------------------------
+# Reporting (Weekly Summary)
+# ----------------------------
+def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
+    """
+    Build a short weekly report (subject + body).
+    (Provides operational oversight without manual analysis.)
+    """
+    now_dt = now_zurich()
+    since_dt = now_dt - timedelta(days=7)
+
+    df = df_all.copy()
+    df["created_at_dt"] = pd.to_datetime(df["created_at"], errors="coerce")
+    df["resolved_at_dt"] = pd.to_datetime(df.get("resolved_at", pd.Series([None] * len(df))), errors="coerce")
+
+    new_last_7d = df[df["created_at_dt"] >= since_dt]
+    resolved_last_7d = df[(df["resolved_at_dt"].notna()) & (df["resolved_at_dt"] >= since_dt)]
+    open_issues = df[df["status"] != "Resolved"]
+
+    subject = f"HSG Reporting Tool – Weekly Summary ({now_dt.strftime('%Y-%m-%d')})"
+
+    body = (
+        f"Weekly summary (last 7 days):\n"
+        f"- New issues: {len(new_last_7d)}\n"
+        f"- Resolved issues: {len(resolved_last_7d)}\n"
+        f"- Open issues (current): {len(open_issues)}\n\n"
+        f"Top issue types (open):\n"
+    )
+
+    if not open_issues.empty:
+        top_types = open_issues["issue_type"].value_counts().head(5)
+        for issue_type, count in top_types.items():
+            body += f"- {issue_type}: {count}\n"
+    else:
+        body += "- n/a\n"
+
+    body += "\nThis email was generated by the HSG Reporting Tool."
+
+    return subject, body
+
+
+def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
+    """
+    Best-effort auto weekly report.
+
+    Limitation:
+    - Streamlit apps do not guarantee background execution.
+    - This runs when the app is accessed and checks whether a report is due.
+    """
+    if not AUTO_WEEKLY_REPORT:
+        return
+
+    now_dt = now_zurich()
+    if now_dt.weekday() != REPORT_WEEKDAY or now_dt.hour != REPORT_HOUR:
+        return
+
+    log_df = fetch_report_log(con, "weekly")
+    if not log_df.empty:
+        last_sent = iso_to_dt(str(log_df.iloc[0]["sent_at"]))
+        if last_sent is not None and last_sent.date() == now_dt.date():
+            return  # already sent today
+
+    df_all = fetch_submissions(con)
+    subject, body = build_weekly_report(df_all)
+    ok, msg = send_admin_report_email(subject, body)
+    if ok:
+        mark_report_sent(con, "weekly")
+    else:
+        logger.warning("Weekly report not sent: %s", msg)
 
 
 # ----------------------------
@@ -468,14 +697,18 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
         user_comment = st.text_area("Problem Description* (max 500 chars)", max_chars=500).strip()
 
+        # Added: show SLA expectation to the user before submit
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+        if sla_hours is not None:
+            st.info(f"Expected handling time (SLA): within {sla_hours} hours.")
+
         render_map_iframe()
         submitted = st.form_submit_button("Submit")
 
     if not submitted:
         return
 
-    # Added: Normalize inputs early to ensure consistent validation + storage.
-    # Why: Users often enter different casing; normalization prevents accidental mismatches.
+    # Normalize inputs early to ensure consistent validation + storage.
     normalized_email = hsg_email.strip().lower()
     normalized_room = room_number.strip().upper()
 
@@ -496,7 +729,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
     insert_submission(con, sub)
 
     # Email is best-effort; submission should still succeed without email.
-    subject, body = confirmation_email_text(sub.name.strip())
+    subject, body = confirmation_email_text(sub.name.strip(), sub.importance)
     ok, msg = send_email(sub.hsg_email, subject, body)
     if ok:
         st.success("Submission successful! A confirmation email was sent.")
@@ -515,8 +748,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.info("No submitted issues yet. Please submit an issue first.")
         return
 
-    # Added: Status filter
-    # Why: Makes the table and charts more useful for users and admins.
+    # Status filter
     status_filter = st.multiselect(
         "Filter by status",
         options=STATUS_LEVELS,
@@ -528,13 +760,36 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.info("No issues match the selected status filter.")
         return
 
-    display_df = build_display_table(df)
+    # Added: compute SLA target date + resolution time (for table and KPI)
+    df_view = df.copy()
+    df_view["expected_resolved_at"] = df_view.apply(
+        lambda r: (
+            expected_resolution_dt(str(r["created_at"]), str(r["importance"])).isoformat(timespec="seconds")
+            if expected_resolution_dt(str(r["created_at"]), str(r["importance"])) is not None
+            else None
+        ),
+        axis=1,
+    )
+
+    # Average resolution time (hours) across resolved issues
+    df_view["created_at_dt"] = pd.to_datetime(df_view["created_at"], errors="coerce")
+    df_view["resolved_at_dt"] = pd.to_datetime(df_view.get("resolved_at", None), errors="coerce")
+    resolved_only = df_view[df_view["resolved_at_dt"].notna() & df_view["created_at_dt"].notna()].copy()
+    if not resolved_only.empty:
+        resolved_only["resolution_hours"] = (
+            (resolved_only["resolved_at_dt"] - resolved_only["created_at_dt"]).dt.total_seconds() / 3600.0
+        )
+        avg_resolution_hours = float(resolved_only["resolution_hours"].mean())
+        st.metric("Avg. resolution time (hours)", f"{avg_resolution_hours:.1f}")
+    else:
+        st.metric("Avg. resolution time (hours)", "n/a")
+
+    display_df = build_display_table(df_view)
     st.subheader("List of Submitted Issues")
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    # Added: CSV export
-    # Why: Enables offline reporting and makes the tool practical for a real facility team workflow.
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    # CSV export (export what is currently shown/filtered)
+    csv_bytes = df_view.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download CSV",
         data=csv_bytes,
@@ -542,10 +797,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         mime="text/csv",
     )
 
-    render_charts(df)
+    render_charts(df_view)
 
-    # Added: Optional audit-log view on this page (read-only).
-    # Why: Demonstrates traceability and professional admin processes.
     with st.expander("Show status change audit log"):
         log_df = fetch_status_log(con)
         if log_df.empty:
@@ -568,6 +821,10 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
             "user_comment": "PROBLEM DESCRIPTION",
             "created_at": "SUBMITTED AT",
             "updated_at": "LAST UPDATED",
+            # Added columns in display:
+            "assigned_to": "ASSIGNED TO",
+            "resolved_at": "RESOLVED AT",
+            "expected_resolved_at": "SLA TARGET",
         }
     )
 
@@ -577,8 +834,9 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Sort by issue type, then importance rank, then newest submissions first.
+    sort_cols = ["ISSUE TYPE", "_imp_rank", "SUBMITTED AT"]
     display_df = display_df.sort_values(
-        by=["ISSUE TYPE", "_imp_rank", "SUBMITTED AT"],
+        by=sort_cols,
         ascending=[True, True, False],
     ).drop(columns=["_imp_rank"])
 
@@ -589,7 +847,6 @@ def render_charts(df: pd.DataFrame) -> None:
     """Render charts from the raw DB data."""
     st.subheader("Number of Issues by Issue Type")
 
-    # Keep chart order stable and readable (no random ordering from value_counts()).
     issue_counts = df["issue_type"].value_counts().reindex(ISSUE_TYPES, fill_value=0)
     fig, ax = plt.subplots()
     ax.barh(issue_counts.index, issue_counts.values)
@@ -597,8 +854,7 @@ def render_charts(df: pd.DataFrame) -> None:
     ax.set_ylabel("Issue Type")
     st.pyplot(fig)
 
-    # Updated: Time-series chart (plot + fill missing days)
-    # Why: A continuous date range makes trends visible and avoids misleading gaps.
+    # Time-series chart (plot + fill missing days)
     st.subheader("Issues Submitted per Day")
     df_dates = df.copy()
     df_dates["created_at"] = pd.to_datetime(df_dates["created_at"], errors="coerce")
@@ -638,6 +894,11 @@ def render_charts(df: pd.DataFrame) -> None:
 
     st.subheader("Distribution of Statuses")
     status_counts = df["status"].value_counts().reindex(STATUS_LEVELS, fill_value=0)
+
+    if status_counts.sum() == 0:
+        st.info("No status data available for the selected filter.")
+        return
+
     fig, ax = plt.subplots()
     ax.pie(status_counts.values, labels=status_counts.index, autopct="%1.1f%%", startangle=90)
     ax.axis("equal")
@@ -652,13 +913,24 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
         st.warning("Enter the correct password to access this page.")
         return
 
+    # Manual report trigger (admin-only)
+    # Why: Even without a scheduler, the team can generate a report on demand.
+    if st.sidebar.button("Send weekly report now"):
+        df_all = fetch_submissions(con)
+        subject, body = build_weekly_report(df_all)
+        ok, msg = send_admin_report_email(subject, body)
+        if ok:
+            mark_report_sent(con, "weekly_manual")
+            st.sidebar.success("Weekly report sent.")
+        else:
+            st.sidebar.warning(msg)
+
     df = fetch_submissions(con)
     if df.empty:
         st.info("No submitted issues yet.")
         return
 
-    # Added: Status filter for admin page
-    # Why: Admins typically work on open issues; filtering improves usability and reduces errors.
+    # Status filter for admin page
     admin_status_filter = st.multiselect(
         "Show issues with status",
         options=STATUS_LEVELS,
@@ -674,6 +946,11 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
     row = df[df["id"] == selected_id].iloc[0]
 
     st.subheader("Selected Issue Details")
+
+    # SLA preview for this issue (helps admin prioritization)
+    sla_target = expected_resolution_dt(str(row["created_at"]), str(row["importance"]))
+    sla_text = sla_target.isoformat(timespec="seconds") if sla_target is not None else "n/a"
+
     st.write(
         {
             "ID": int(row["id"]),
@@ -683,7 +960,10 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
             "Room": row["room_number"],
             "Importance": row["importance"],
             "Status": row["status"],
+            "Assigned To": row.get("assigned_to", None),
             "Submitted At": row["created_at"],
+            "SLA Target": sla_text,
+            "Resolved At": row.get("resolved_at", None),
             "Last Updated": row["updated_at"],
             "Problem Description": row["user_comment"],
         }
@@ -691,7 +971,17 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 
     st.divider()
 
-    # Keep admin scope minimal: update status only (prevents accidental data edits).
+    # Assigned to (admin-managed)
+    # Why: Enables ownership and accountability in real workflows.
+    current_assignee = str(row.get("assigned_to", "") or "")
+    assigned_to = st.selectbox(
+        "Assigned to",
+        options=["(unassigned)"] + ASSIGNEES,
+        index=(["(unassigned)"] + ASSIGNEES).index(current_assignee) if current_assignee in (["(unassigned)"] + ASSIGNEES) else 0,
+    )
+    assigned_to_value = None if assigned_to == "(unassigned)" else assigned_to
+
+    # Status update (admin-managed)
     new_status = st.selectbox(
         "New Status",
         STATUS_LEVELS,
@@ -705,18 +995,21 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
             value=False,
         )
 
-    if st.button("Update Status"):
+    if st.button("Update"):
         if new_status == "Resolved" and not confirm_resolve:
             st.error("Please confirm resolution before setting status to Resolved.")
             return
 
         old_status = str(row["status"])
-        update_issue_status(con, int(selected_id), new_status)
 
-        # Added: Audit log for status changes
-        # Why: Provides traceability and accountability for admin actions.
-        if new_status != old_status:
-            log_status_change(con, int(selected_id), old_status, new_status)
+        # Update + audit-log in one transaction (consistent state)
+        update_issue_admin_fields(
+            con=con,
+            issue_id=int(selected_id),
+            new_status=new_status,
+            assigned_to=assigned_to_value,
+            old_status=old_status,
+        )
 
         # Notify only when resolved (best effort).
         if new_status == "Resolved":
@@ -728,7 +1021,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
                 ok, msg = send_email(str(row["hsg_email"]).strip(), subject, body)
                 (st.success(msg) if ok else st.warning(msg))
 
-        st.success("Status updated successfully.")
+        st.success("Update successful.")
         st.rerun()
 
 
@@ -742,6 +1035,9 @@ def main() -> None:
     con = get_connection()
     init_db(con)
     migrate_db(con)  # keeps existing/older DB files compatible with this version of the app
+
+    # Best-effort auto weekly report (runs when app is accessed)
+    send_weekly_report_if_due(con)
 
     st.title("HSG Reporting Tool")
     page = st.sidebar.radio("Select Page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
