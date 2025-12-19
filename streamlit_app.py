@@ -696,7 +696,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         # Helpful hints reduce validation errors and improve the user experience.
         st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
 
-        room_number = st.text_input("Room Number* (e.g., A 09-001)").strip()
+        room_number = st.text_input("Room Number*").strip()
         st.caption("Room example: A 09-001")
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
@@ -927,7 +927,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
         return
 
     # Manual report trigger (admin-only)
-    # Why: Even without a scheduler, the team can generate a report on demand.
+    # (Even without a scheduler, the team can generate a report on demand.)
     if st.sidebar.button("Send weekly report now"):
         df_all = fetch_submissions(con)
         subject, body = build_weekly_report(df_all)
@@ -985,7 +985,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
     st.divider()
 
     # Assigned to (admin-managed)
-    # Why: Enables ownership and accountability in real workflows.
+    # (Enables ownership and accountability in real workflows.)
     current_assignee = str(row.get("assigned_to", "") or "")
     assigned_to = st.selectbox(
         "Assigned to",
