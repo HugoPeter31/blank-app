@@ -683,6 +683,11 @@ def render_map_iframe() -> None:
 # ----------------------------
 def page_submission_form(con: sqlite3.Connection) -> None:
     st.header("Submission Form")
+    st.info(
+    "Please use this form to report facility-related issues on campus. "
+    "All submissions are reviewed by the responsible team."
+    )
+
 
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*").strip()
@@ -690,24 +695,25 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
         # Helpful hints reduce validation errors and improve the user experience.
         st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
-        st.caption("Room example: A 09-001")
 
+        room_number = st.text_input("Room Number* (e.g., A 09-001)").strip()
+        st.caption("Room example: A 09-001")
+        issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
+        importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
+        user_comment = st.text_area("Problem Description*", max_chars=500).strip()
+        st.caption("Please be concise and include key details (max. 500 characters).")
+        
         uploaded_file = st.file_uploader(
             "Upload a Photo (optional)",
             type=["jpg", "jpeg", "png"],
         )
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded Photo (not stored)", use_container_width=True)
-
-        room_number = st.text_input("Room Number* (e.g., A 09-001)").strip()
-        issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
-        importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
-        user_comment = st.text_area("Problem Description* (max 500 chars)", max_chars=500).strip()
-
-        # Added: show SLA expectation to the user before submit
+        
+        # Show Service Level Agreement (SLA) expectation to the user before submit
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
         if sla_hours is not None:
-            st.info(f"Expected handling time (SLA): within {sla_hours} hours.")
+            st.info(f"Expected handling time: within {sla_hours} hours.")
 
         render_map_iframe()
         submitted = st.form_submit_button("Submit")
