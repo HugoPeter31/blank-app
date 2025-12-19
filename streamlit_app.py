@@ -1,5 +1,5 @@
 """
-HSG Reporting Tool (via Streamlit)
+Reporting Tool at HSG (via Streamlit)
 Developed by: Arthur Lavric & Fabio Patierno
 
 Purpose:
@@ -1036,7 +1036,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 # Main
 # ----------------------------
 def main() -> None:
-    st.set_page_config(page_title="HSG Reporting Tool", layout="centered")
+    st.set_page_config(page_title="Reporting Tool at HSG", layout="centered")
 
     show_logo() 
 
@@ -1053,7 +1053,7 @@ def main() -> None:
     # Best-effort auto weekly report (runs when app is accessed)
     send_weekly_report_if_due(con)
 
-    st.title("HSG Reporting Tool")
+    st.title("Reporting Tool at HSG")
     page = st.sidebar.radio("Select Page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
 
     if page == "Submission Form":
