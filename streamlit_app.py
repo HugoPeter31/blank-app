@@ -208,10 +208,13 @@ def validate_admin_email(email: str) -> list[str]:
 # ----------------------------
 # Database: connection + schema
 # ----------------------------
+@st.cache_resource
 def get_connection() -> sqlite3.Connection:
-    """Create a SQLite connection (Streamlit runs in a single process)."""
+    """
+    Create and cache a SQLite connection.
+    (Streamlit reruns the script; caching prevents opening a new DB connection on every rerun.)
+    """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
-
 
 def init_db(con: sqlite3.Connection) -> None:
     """Create core tables for the issue reporting module."""
@@ -261,7 +264,7 @@ def init_db(con: sqlite3.Connection) -> None:
 
 
 def init_booking_table(con: sqlite3.Connection) -> None:
-    """Bookings table for assets."""
+    """Decouples booking logic from issue reporting; demonstrates extension."""
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS bookings (
@@ -447,7 +450,7 @@ def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datet
     """
     count = con.execute(
         query,
-        (asset_id, end_time.isoformat(), start_time.isoformat()),
+        (asset_id, end_time.isoformat(timespec="seconds"), start_time.isoformat(timespec="seconds")),
     ).fetchone()[0]
     return count == 0
 
@@ -924,6 +927,20 @@ def page_booking(con: sqlite3.Connection) -> None:
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
 
+   if selected["status"] != "available":
+       st.warning("This asset is currently not available for booking.")
+       
+    st.subheader("Upcoming bookings")
+    future = fetch_future_bookings(con, asset_id)
+    if future.empty:
+        st.info("No upcoming bookings.")
+    else:
+        st.dataframe(future, hide_index=True, use_container_width=True)
+
+    if selected["status"] != "available":
+        return
+
+    
     if selected["status"] != "available":
         st.warning("This asset is currently not available for booking.")
         return
@@ -945,10 +962,12 @@ def page_booking(con: sqlite3.Connection) -> None:
         st.error("Name is required.")
         return
 
-    start_dt = datetime.combine(start_date, start_time)
+    # Build timezone-aware datetimes (Zurich)
+    start_dt_naive = datetime.combine(start_date, start_time)
+    start_dt = APP_TZ.localize(start_dt_naive)
     end_dt = start_dt + timedelta(hours=duration_hours)
 
-    if start_dt < now_zurich().replace(tzinfo=None):
+    if start_dt < now_zurich():
         st.error("Start time cannot be in the past.")
         return
 
@@ -1155,11 +1174,14 @@ def main() -> None:
 
     show_logo()
 
-    st.image(
-        "campus_header.jpeg",
-        caption="University of St. Gallen – Campus",
-        use_container_width=True,
-    )
+    try:
+        st.image(
+            "campus_header.jpeg",
+            caption="University of St. Gallen – Campus",
+            use_container_width=True,
+        )
+    except Exception:
+        st.info("Header image not found. Add 'campus_header.jpeg' to the repository root.")
 
     con = get_connection()
     init_db(con)
@@ -1174,10 +1196,29 @@ def main() -> None:
 
     st.title("Reporting Tool at HSG")
 
-    page = st.sidebar.radio(
-        "Select Page:",
-        ["Submission Form", "Submitted Issues", "Booking", "Asset Tracking", "Overwrite Status"],
+    # Sidebar navigation with 3 sections (categories)
+    st.sidebar.markdown("### Navigation")
+
+    section = st.sidebar.radio(
+        "Select section:",
+        ["Reporting Tool", "Booking / Tracking", "Overview"],
     )
+
+    if section == "Reporting Tool":
+        page = st.sidebar.radio(
+            "Select page:",
+            ["Submission Form", "Submitted Issues", "Overwrite Status"],
+        )
+    elif section == "Booking / Tracking":
+        page = st.sidebar.radio(
+            "Select page:",
+            ["Booking", "Asset Tracking"],
+        )
+    else:  # Overview
+        page = st.sidebar.radio(
+            "Select page:",
+            ["Overview Dashboard"],
+        )
 
     if page == "Submission Form":
         page_submission_form(con)
