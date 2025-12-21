@@ -6,4 +6,4 @@ The application allows members of the HSG community to report facility-related i
 
 
 
-*Programming with Advanced Computer Languages - Group Project (Lavric & Patierno)*
+*- Group Project (Lavric & Patierno)*
