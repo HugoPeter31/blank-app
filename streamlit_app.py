@@ -722,16 +722,19 @@ def render_map_iframe() -> None:
 # ----------------------------
 def page_submission_form(con: sqlite3.Connection) -> None:
     st.header("Submission Form")
-    st.info("Please use this form to report facility-related issues on campus.")
+    st.caption("Fields marked with * are mandatory.")
+    st.info("Use this form to report facility-related issues. You will receive a confirmation email after submitting.")
 
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
-        hsg_email = st.text_input("HSG Email Address*",placeholder="Accepted emails: …@unisg.ch or …@student.unisg.ch").strip()
+        hsg_email = st.text_input("HSG Email Address*",placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
+        st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
+        
         room_number = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
 
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
-        user_comment = st.text_area("Problem Description*", max_chars=500).strip()
+        user_comment = st.text_area("Problem Description*",placeholder="Describe the issue briefly (what/where/since when/impact).", max_chars=500).strip()
         st.caption("Please be concise (max. 500 characters).")
 
         uploaded_file = st.file_uploader("Upload a Photo (optional)", type=["jpg", "jpeg", "png"])
