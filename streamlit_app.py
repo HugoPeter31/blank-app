@@ -144,7 +144,7 @@ def iso_to_dt(value: str) -> datetime | None:
     """Parse ISO string to datetime; returns None if invalid."""
     try:
         return datetime.fromisoformat(value)
-    except Exception:
+    except FileNotFoundError:
         return None
 
 
@@ -1055,7 +1055,7 @@ def page_assets(con: sqlite3.Connection) -> None:
 
     st.subheader("Assets grouped by location")
     for location, group in filtered_df.groupby("location_label"):
-        st.markdown(f"### {location}")
+    with st.expander(f"{location} ({len(group)})", expanded=False):
         st.dataframe(group[["asset_id", "asset_type", "status"]], hide_index=True, use_container_width=True)
 
     st.divider()
@@ -1246,7 +1246,7 @@ def main() -> None:
             caption="University of St. Gallen – Campus",
             use_container_width=True,
         )
-    except Exception:
+    except FileNotFoundError:
         st.info("Header image not found. Add 'campus_header.jpeg' to the repository root.")
 
     con = get_connection()
@@ -1285,6 +1285,13 @@ def main() -> None:
             "Select page:",
             ["Overview Dashboard"],
         )
+
+    if section == "Reporting Tool":
+        st.sidebar.caption("Report campus facility issues and track resolution.")
+    elif section == "Booking / Tracking":
+        st.sidebar.caption("Book assets and manage their locations.")
+    else:
+        st.sidebar.caption("See key metrics at a glance.")
 
     if page == "Submission Form":
         page_submission_form(con)
