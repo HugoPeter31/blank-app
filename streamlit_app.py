@@ -914,8 +914,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         else:
             st.dataframe(log_df, use_container_width=True, hide_index=True)
 
-
-# ✅ FIXED (indentation + removed duplicate availability checks)
 def page_booking(con: sqlite3.Connection) -> None:
     st.header("Booking")
 
@@ -952,10 +950,10 @@ def page_booking(con: sqlite3.Connection) -> None:
     st.subheader("Book this asset")
 
     with st.form("booking_form"):
-        user_name = st.text_input("Your name")
-        start_date = st.date_input("Start date")
-        start_time = st.time_input("Start time")
-        duration_hours = st.number_input("Duration (hours)", min_value=1, max_value=12, value=1, step=1)
+        user_name = st.text_input("Your name*",placeholder="e.g., Max Muster")
+        start_date = st.date_input("Start date*")
+        start_time = st.time_input("Start time*")
+        duration_hours = st.number_input("Duration (hours)*", min_value=1, max_value=12, value=1, step=1)
         submit = st.form_submit_button("Confirm booking")
 
     if not submit:
