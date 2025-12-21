@@ -1,5 +1,5 @@
 """
-Reporting Tool at HSG (via Streamlit)
+Reporting Tool @ HSG (via Streamlit)
 Developed by: Arthur Lavric & Fabio Patierno
 
 Features (overview):
@@ -1208,7 +1208,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
 # Main
 # ----------------------------
 def main() -> None:
-    st.set_page_config(page_title="Reporting Tool at HSG", layout="centered")
+    st.set_page_config(page_title="Reporting Tool @ HSG", layout="centered")
 
     show_logo()
 
@@ -1232,7 +1232,7 @@ def main() -> None:
     sync_asset_statuses_from_bookings(con)
     send_weekly_report_if_due(con)
 
-    st.title("Reporting Tool at HSG")
+    st.title("Reporting Tool @ HSG")
 
     # Sidebar navigation with 3 sections (categories)
     st.sidebar.markdown("### Navigation")
