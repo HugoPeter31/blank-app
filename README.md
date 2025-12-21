@@ -4,6 +4,4 @@ The Reporting Tool @ HSG is a comprehensive Streamlit-based web application desi
 
 The application allows members of the HSG community to report facility-related issues, book shared assets, and track resources, while providing facility management with robust administrative, reporting, and monitoring capabilities.
 
-
-
 *- Group Project (Lavric & Patierno)*
