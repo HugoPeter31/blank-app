@@ -1084,7 +1084,6 @@ def page_assets(con: sqlite3.Connection) -> None:
 
     st.divider()
 
-    assets_df = fetch_assets(con)
     assets_df = fetch_assets(con).copy()
     assets_df["location_label"] = assets_df["location_id"].apply(
         lambda lid: LOCATIONS.get(str(lid), {}).get("label", "Unknown location")
@@ -1095,16 +1094,14 @@ def page_assets(con: sqlite3.Connection) -> None:
         return f'{row["asset_name"]} • {row["asset_type"]} • {row["location_label"]} • {status}'
     
     asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in assets_df.iterrows()}
-    
+
     asset_id = st.selectbox(
         "Select asset",
         options=list(asset_rows.keys()),
         format_func=lambda aid: asset_rows[aid],
     )
 
-    asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
-    asset = df[df["asset_id"] == asset_id].iloc[0]
-
+    asset = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
 
     st.subheader("Selected asset")
 
