@@ -1056,7 +1056,7 @@ def page_assets(con: sqlite3.Connection) -> None:
     st.subheader("Assets grouped by location")
     for location, group in filtered_df.groupby("location_label"):
         with st.expander(f"{location} ({len(group)})", expanded=False):
-        st.dataframe(group[["asset_id", "asset_type", "status"]], hide_index=True, use_container_width=True)
+            st.dataframe(group[["asset_id", "asset_type", "status"]], hide_index=True, use_container_width=True)
 
     st.divider()
 
