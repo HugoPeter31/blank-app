@@ -1,20 +1,20 @@
-from __future__ import annotations
+"""
+Reporting Tool @ HSG (via Streamlit)
+Developed by: Arthur Lavric & Fabio Patierno
 
-# ----------------------------
-# Reporting Tool @ HSG (via Streamlit)
-# Developed by: Arthur Lavric & Fabio Patierno
-# ----------------------------
-# Features (overview):
-# - Issue reporting form (facility issues) stored in SQLite
-# - Dashboard of submitted issues + charts + CSV export
-# - Admin page to update issue status (password protected) + audit log
-# - Booking page for bookable assets (rooms/equipment/furniture) stored in SQLite
-# - Asset tracking page (assets grouped by location; move assets between locations)
-#
-# Note:
-# - Admin page is protected via Streamlit secrets (ADMIN_PASSWORD).
-# - Email sending requires SMTP secrets (see .streamlit/secrets.toml).
-# ----------------------------
+Features (overview):
+- Issue reporting form (facility issues) stored in SQLite
+- Dashboard of submitted issues + charts + CSV export
+- Admin page to update issue status (password protected) + audit log
+- Booking page for bookable assets (rooms/equipment/furniture) stored in SQLite
+- Asset tracking page (assets grouped by location; move assets between locations)
+
+Note:
+- Admin page is protected via Streamlit secrets (ADMIN_PASSWORD).
+- Email sending requires SMTP secrets (see .streamlit/secrets.toml).
+"""
+
+from __future__ import annotations
 
 # ----------------------------
 # Imports
@@ -41,6 +41,9 @@ import streamlit as st
 APP_TZ = pytz.timezone("Europe/Zurich")
 DB_PATH = "hsg_reporting.db"
 LOGO_PATH = "HSG-logo-new.png"
+
+# UI color (table header). If your professor provided a specific CI hex, change it here only.
+HSG_GREEN = "#007A33"
 
 ISSUE_TYPES = [
     "Lighting issues",
@@ -76,6 +79,7 @@ LOCATIONS = {
 # ----------------------------
 logger = logging.getLogger(__name__)
 if not logger.handlers:
+    # Single basic configuration prevents duplicated logs on Streamlit reruns.
     logging.basicConfig(level=logging.INFO)
 
 
@@ -96,7 +100,11 @@ class Submission:
 # Secrets (Streamlit Cloud → Settings → Secrets)
 # ----------------------------
 def get_secret(key: str, default: str | None = None) -> str:
-    """Read a Streamlit secret (st.secrets)."""
+    """
+    Centralizing secret access ensures:
+    - consistent error handling (fail fast instead of partial misbehavior),
+    - a single place to change defaults.
+    """
     if key in st.secrets:
         return str(st.secrets[key])
     if default is not None:
@@ -125,7 +133,7 @@ REPORT_HOUR = int(get_secret("REPORT_HOUR", "7"))
 
 
 # ----------------------------
-# Utility / helpers
+# Time helpers
 # ----------------------------
 def now_zurich() -> datetime:
     """Current Zurich time (timezone-aware)."""
@@ -154,10 +162,31 @@ def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | N
     return created_dt + timedelta(hours=int(sla_hours))
 
 
-# STEP 1 — helper to identify rooms
+# ----------------------------
+# Utility / helpers
+# ----------------------------
 def is_room_location(location_id: str) -> bool:
     """Return True if the location represents a room."""
     return str(location_id).startswith("R_")
+
+
+def style_table(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    """
+    We style via pandas Styler so the UI stays consistent across all tables
+    without duplicating styling logic at each call site.
+    """
+    return (
+        df.style.set_table_styles(
+            [
+                # Header cells
+                {"selector": "th", "props": [("background-color", HSG_GREEN), ("color", "white")]},
+                # Optional: tighten padding a bit to keep tables compact/readable
+                {"selector": "th, td", "props": [("padding", "6px")]},
+            ]
+        )
+        # Avoid huge long-text columns forcing horizontal scrolling
+        .set_properties(**{"white-space": "pre-wrap"})
+    )
 
 
 # ----------------------------
@@ -173,8 +202,8 @@ def valid_room_number(room_number: str) -> bool:
 
 def normalize_room(room_number: str) -> str:
     """
-    Normalize room numbers to the canonical format: 'A 09-001'
-    Accepts user inputs like 'A09-001' or 'A 09-001'.
+    Normalizing input reduces accidental duplicates (e.g., "A09-001" vs "A 09-001")
+    and makes filtering/grouping in the dashboard reliable.
     """
     raw = room_number.strip().upper()
     raw = re.sub(r"^([A-Z])(\d{2}-\d{3})$", r"\1 \2", raw)  # A09-001 -> A 09-001
@@ -190,12 +219,12 @@ def validate_submission_input(sub: Submission) -> list[str]:
         errors.append("Name is required.")
 
     if not sub.hsg_email.strip():
-        errors.append("HSG email address is required.")
+        errors.append("HSG Email Address is required.")
     elif not valid_email(sub.hsg_email):
-        errors.append("Invalid email address. Use …@unisg.ch or …@student.unisg.ch.")
+        errors.append("Invalid mail address. Use …@unisg.ch or …@student.unisg.ch.")
 
     if not sub.room_number.strip():
-        errors.append("Room number is required.")
+        errors.append("Room Number is required.")
     elif not valid_room_number(sub.room_number):
         errors.append("Invalid room number format. Example: 'A 09-001'.")
 
@@ -206,7 +235,7 @@ def validate_submission_input(sub: Submission) -> list[str]:
         errors.append("Invalid importance selection.")
 
     if not sub.user_comment.strip():
-        errors.append("Problem description is required.")
+        errors.append("Problem Description is required.")
 
     return errors
 
@@ -226,8 +255,9 @@ def validate_admin_email(email: str) -> list[str]:
 @st.cache_resource
 def get_connection() -> sqlite3.Connection:
     """
-    Create and cache a SQLite connection.
-    (Streamlit reruns the script; caching prevents opening a new DB connection on every rerun.)
+    Streamlit reruns the script often. Caching the DB connection avoids:
+    - opening many connections,
+    - unnecessary overhead / flakiness on reruns.
     """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -417,7 +447,6 @@ def fetch_assets(con: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
-# STEP 2 — DB helper to fetch assets inside a room
 def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list[str]:
     """
     Return asset_ids of all non-room assets located inside a given room.
@@ -445,7 +474,6 @@ def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
 # ----------------------------
 # Booking helpers
 # ----------------------------
-# STEP 3 — Modify the status synchronization logic (CORE CHANGE)
 def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
     """
     Update asset statuses based on active bookings.
@@ -453,11 +481,11 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
     """
     now_iso = now_zurich().isoformat(timespec="seconds")
 
-    # Reset all assets
+    # Reset all assets so the DB reflects "current truth" on every rerun.
+    # This avoids drift (e.g., assets stuck as booked due to older state).
     con.execute("UPDATE assets SET status = 'available'")
     con.commit()
 
-    # Active bookings
     active = pd.read_sql(
         """
         SELECT b.asset_id, a.asset_type, a.location_id
@@ -475,35 +503,73 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
         location_id = row["location_id"]
 
         # Always mark the booked asset
-        con.execute(
-            "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
-            (asset_id,),
-        )
+        con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (asset_id,))
 
         # Auto-book assets inside a room
-        if asset_type == "Room" and is_room_location(location_id):
-            inside_assets = fetch_assets_in_room(con, location_id)
+        if asset_type == "Room" and is_room_location(str(location_id)):
+            inside_assets = fetch_assets_in_room(con, str(location_id))
             for aid in inside_assets:
-                con.execute(
-                    "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
-                    (aid,),
-                )
+                con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (aid,))
 
     con.commit()
 
 
+def _asset_meta(con: sqlite3.Connection, asset_id: str) -> tuple[str, str] | None:
+    """Small helper: fetch (asset_type, location_id) for a given asset_id."""
+    row = con.execute(
+        "SELECT asset_type, location_id FROM assets WHERE asset_id = ?",
+        (asset_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return str(row[0]), str(row[1])
+
+
 def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datetime, end_time: datetime) -> bool:
-    query = """
-        SELECT COUNT(*) FROM bookings
-        WHERE asset_id = ?
+    """
+    Availability must consider room logic:
+    - If a room is booked, assets inside are considered booked.
+    - If an asset inside a room is booked, booking the room should be blocked (and vice versa).
+    This prevents inconsistent bookings that would confuse users.
+    """
+    meta = _asset_meta(con, asset_id)
+    if meta is None:
+        return False
+
+    asset_type, location_id = meta
+
+    # Determine which asset_ids must be free for this booking request.
+    # For a Room booking: room itself + everything inside that room.
+    # For an asset inside a room: asset itself + the room "container".
+    relevant_asset_ids = {asset_id}
+
+    if asset_type == "Room" and is_room_location(location_id):
+        relevant_asset_ids.update(fetch_assets_in_room(con, location_id))
+    else:
+        if is_room_location(location_id):
+            # asset is located inside a room; block if that room asset is booked
+            room_asset_row = con.execute(
+                "SELECT asset_id FROM assets WHERE asset_type = 'Room' AND location_id = ? LIMIT 1",
+                (location_id,),
+            ).fetchone()
+            if room_asset_row:
+                relevant_asset_ids.add(str(room_asset_row[0]))
+
+    placeholders = ",".join(["?"] * len(relevant_asset_ids))
+    query = f"""
+        SELECT COUNT(*)
+        FROM bookings
+        WHERE asset_id IN ({placeholders})
           AND start_time < ?
           AND end_time > ?
     """
-    count = con.execute(
-        query,
-        (asset_id, end_time.isoformat(timespec="seconds"), start_time.isoformat(timespec="seconds")),
-    ).fetchone()[0]
-    return count == 0
+    params = (
+        *tuple(relevant_asset_ids),
+        end_time.isoformat(timespec="seconds"),
+        start_time.isoformat(timespec="seconds"),
+    )
+    count = con.execute(query, params).fetchone()[0]
+    return int(count) == 0
 
 
 def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFrame:
@@ -551,6 +617,8 @@ def update_issue_admin_fields(
     updated_at = now_zurich_str()
     set_resolved_at = (new_status == "Resolved")
 
+    # Using a transaction (with con:) ensures the update + audit log are consistent
+    # even if something fails mid-way.
     with con:
         con.execute(
             """
@@ -763,16 +831,16 @@ def show_logo() -> None:
 
 
 def render_map_iframe() -> None:
-    with st.expander("Map (optional)", expanded=False):
-        url = "https://use.mazemap.com/embed.html?v=1&zlevel=1&center=9.373611,47.429708&zoom=14.7&campusid=710"
-        st.markdown(
-            f"""
-            <iframe src="{url}"
-                width="100%" height="420" frameborder="0"
-                marginheight="0" marginwidth="0" scrolling="no"></iframe>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.markdown("**Map** (optional)")
+    url = "https://use.mazemap.com/embed.html?v=1&zlevel=1&center=9.373611,47.429708&zoom=14.7&campusid=710"
+    st.markdown(
+        f"""
+        <iframe src="{url}"
+            width="100%" height="420" frameborder="0"
+            marginheight="0" marginwidth="0" scrolling="no"></iframe>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def location_label(loc_id: str) -> str:
@@ -806,32 +874,34 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
 # Pages
 # ----------------------------
 def page_submission_form(con: sqlite3.Connection) -> None:
-    st.header("Report an issue")
+    st.header("Submission Form")
+    st.info("Use this form to report facility-related issues. You will receive a confirmation email after submitting.")
     st.caption("Fields marked with * are mandatory.")
 
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
-        hsg_email = st.text_input("HSG email address*", placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
-        st.caption("Accepted: …@unisg.ch or …@student.unisg.ch")
+        hsg_email = st.text_input("HSG Email Address*", placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
+        st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
 
-        room_number_input = st.text_input("Room number*", placeholder="e.g., A 09-001").strip()
+        room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
 
-        issue_type = st.selectbox("Issue type*", ISSUE_TYPES)
+        issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
 
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
         if sla_hours is not None:
-            st.info(f"SLA target: within {sla_hours} hours.")
+            st.info(f"Expected handling time (SLA): within {sla_hours} hours.")
 
         user_comment = st.text_area(
-            "Problem description*",
+            "Problem Description*",
             max_chars=500,
-            placeholder="What happened? Where exactly? Since when? Any impact?",
+            placeholder="Describe the issue briefly (what/where/since when/impact).",
         ).strip()
+        st.caption("Please be concise (max. 500 characters).")
 
-        uploaded_file = st.file_uploader("Upload a photo (optional)", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader("Upload a Photo (optional)", type=["jpg", "jpeg", "png"])
         if uploaded_file is not None:
-            st.image(uploaded_file, caption="Preview (not stored)", use_container_width=True)
+            st.image(uploaded_file, caption="Uploaded Photo (not stored)", use_container_width=True)
 
         render_map_iframe()
         submitted = st.form_submit_button("Submit")
@@ -857,8 +927,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
     subject, body = confirmation_email_text(sub.name.strip(), sub.importance)
     ok, msg = send_email(sub.hsg_email, subject, body)
-
-    st.success("Submission received.")
+    st.success("Submission successful!")
     if not ok:
         st.warning(msg)
 
@@ -947,10 +1016,10 @@ def render_charts(df: pd.DataFrame) -> None:
 
 
 def page_submitted_issues(con: sqlite3.Connection) -> None:
-    st.header("Submitted issues")
+    st.header("Submitted Issues")
 
     df = fetch_submissions(con)
-    st.subheader(f"Total issues: {len(df)}")
+    st.subheader(f"Total Issues: {len(df)}")
 
     if df.empty:
         st.info("No submitted issues yet. Please submit an issue first.")
@@ -982,8 +1051,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.metric("Avg. resolution time (hours)", "n/a")
 
     display_df = build_display_table(df_view)
-    st.subheader("List of submitted issues")
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.subheader("List of Submitted Issues")
+    st.dataframe(style_table(display_df), use_container_width=True, hide_index=True)
 
     csv_bytes = df_view.to_csv(index=False).encode("utf-8")
     st.download_button("Download CSV", data=csv_bytes, file_name="hsg_reporting_issues.csv", mime="text/csv")
@@ -995,11 +1064,12 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         if log_df.empty:
             st.info("No status changes recorded yet.")
         else:
-            st.dataframe(log_df, use_container_width=True, hide_index=True)
+            st.dataframe(style_table(log_df), use_container_width=True, hide_index=True)
 
 
 def page_booking(con: sqlite3.Connection) -> None:
-    st.header("Book an asset")
+    st.header("Booking")
+    st.info("Select an asset, review upcoming bookings, and book an available slot.")
 
     sync_asset_statuses_from_bookings(con)
     assets_df = fetch_assets(con)
@@ -1008,21 +1078,11 @@ def page_booking(con: sqlite3.Connection) -> None:
         st.warning("No assets available.")
         return
 
-    c1, c2, c3 = st.columns([2, 1, 1])
-    search = c1.text_input("Search", placeholder="e.g., projector, meeting, A 09-001").strip().lower()
-    type_filter = c2.selectbox("Type", options=["All"] + sorted(assets_df["asset_type"].unique().tolist()))
-    availability_filter = c3.selectbox("Availability", options=["All", "Available", "Booked"])
+    search = st.text_input("Search asset (name/type/location)", placeholder="e.g., projector, meeting, A 09-001").strip().lower()
 
     view_df = assets_df.copy()
     view_df["location_label"] = view_df["location_id"].apply(location_label)
     view_df["label"] = view_df.apply(asset_display_label, axis=1)
-
-    if type_filter != "All":
-        view_df = view_df[view_df["asset_type"] == type_filter]
-
-    if availability_filter != "All":
-        want = "available" if availability_filter == "Available" else "booked"
-        view_df = view_df[view_df["status"].astype(str).str.lower() == want]
 
     if search:
         mask = (
@@ -1033,7 +1093,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         view_df = view_df[mask].copy()
 
     if view_df.empty:
-        st.warning("No assets match your filters.")
+        st.warning("No assets match your search.")
         return
 
     view_df["_status_rank"] = view_df["status"].astype(str).str.lower().map({"available": 0, "booked": 1}).fillna(99).astype(int)
@@ -1059,23 +1119,28 @@ def page_booking(con: sqlite3.Connection) -> None:
     st.write("**Location:**", location_label(str(selected["location_id"])))
 
     if selected_status == "available":
-        st.success("Available ✅")
-    else:
+        st.success("Status: Available ✅")
+    elif selected_status == "booked":
         next_free = next_available_time(con, asset_id)
-        st.warning(f"Booked ⛔{'  •  Next available: ' + next_free.strftime('%Y-%m-%d %H:%M') if next_free else ''}")
+        if next_free is not None:
+            st.warning(f"Status: Booked ⛔  •  Next available: {next_free.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.warning("Status: Booked ⛔")
+    else:
+        st.info(f"Status: {selected['status']}")
 
     st.subheader("Upcoming bookings")
     future = fetch_future_bookings(con, asset_id)
     if future.empty:
         st.caption("No upcoming bookings.")
     else:
-        st.dataframe(format_booking_table(future), hide_index=True, use_container_width=True)
+        st.dataframe(style_table(format_booking_table(future)), hide_index=True, use_container_width=True)
 
     st.divider()
     st.subheader("Create booking")
 
     if selected_status != "available":
-        st.info("Choose an available asset to create a booking.")
+        st.info("This asset is currently not available. Please choose a different asset or try later.")
         return
 
     with st.form("booking_form"):
@@ -1108,7 +1173,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         return
 
     if not is_asset_available(con, asset_id, start_dt, end_dt):
-        st.error("This asset is already booked during the selected time.")
+        st.error("This asset is already booked during the selected time (or blocked by a room/contained asset booking).")
         return
 
     con.execute(
@@ -1132,7 +1197,7 @@ def page_booking(con: sqlite3.Connection) -> None:
 
 
 def page_assets(con: sqlite3.Connection) -> None:
-    st.header("Asset tracking")
+    st.header("Asset Tracking")
 
     df = fetch_assets(con)
     if df.empty:
@@ -1144,26 +1209,22 @@ def page_assets(con: sqlite3.Connection) -> None:
 
     st.subheader("Filters")
     location_filter = st.multiselect(
-        "Location",
+        "Filter by location",
         options=sorted(df["location_label"].unique()),
         default=sorted(df["location_label"].unique()),
     )
     status_filter = st.multiselect(
-        "Status",
+        "Filter by status",
         options=sorted(df["status"].unique()),
         default=sorted(df["status"].unique()),
     )
 
     filtered_df = df[(df["location_label"].isin(location_filter)) & (df["status"].isin(status_filter))]
 
-    st.subheader("Grouped by location")
+    st.subheader("Assets grouped by location")
     for location, group in filtered_df.groupby("location_label"):
         with st.expander(f"{location} ({len(group)})", expanded=False):
-            st.dataframe(
-                group[["asset_id", "asset_name", "asset_type", "status"]],
-                hide_index=True,
-                use_container_width=True,
-            )
+            st.dataframe(style_table(group[["asset_id", "asset_type", "status"]]), hide_index=True, use_container_width=True)
 
     st.divider()
 
@@ -1203,24 +1264,22 @@ def page_assets(con: sqlite3.Connection) -> None:
 
 
 def page_overwrite_status(con: sqlite3.Connection) -> None:
-    st.header("Admin – update issue status")
+    st.header("Overwrite Status")
 
-    entered_password = st.text_input("Admin password", type="password")
+    entered_password = st.sidebar.text_input("Enter Password", "", type="password")
     if entered_password != ADMIN_PASSWORD:
-        st.info("Enter the admin password to access this page.")
+        st.warning("Enter the correct password to access this page.")
         return
 
-    c1, c2 = st.columns([1, 2])
-    if c1.button("Send weekly report now"):
+    if st.sidebar.button("Send weekly report now"):
         df_all = fetch_submissions(con)
         subject, body = build_weekly_report(df_all)
         ok, msg = send_admin_report_email(subject, body)
         if ok:
             mark_report_sent(con, "weekly_manual")
-            st.success("Weekly report sent.")
+            st.sidebar.success("Weekly report sent.")
         else:
-            st.warning(msg)
-    c2.caption("Sends the current weekly report to the configured ADMIN_INBOX.")
+            st.sidebar.warning(msg)
 
     df = fetch_submissions(con)
     if df.empty:
@@ -1234,16 +1293,17 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
     )
     df = df[df["status"].isin(admin_status_filter)]
     if df.empty:
-        st.info("No issues match the selected filter.")
+        st.info("No issues match the selected admin status filter.")
         return
 
-    selected_id = st.selectbox("Select issue ID", df["id"].tolist())
+    selected_id = st.selectbox("Select Issue ID to update:", df["id"].tolist())
     row = df[df["id"] == selected_id].iloc[0]
 
     sla_target = expected_resolution_dt(str(row["created_at"]), str(row["importance"]))
     sla_text = sla_target.isoformat(timespec="seconds") if sla_target is not None else "n/a"
 
-    st.subheader("Selected issue details")
+    st.subheader("Selected Issue Details")
+    # Keeping this as a compact dict keeps the UI simple and avoids information overload.
     st.write(
         {
             "ID": int(row["id"]),
@@ -1273,14 +1333,15 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
     assigned_to_value = None if assigned_to == "(unassigned)" else assigned_to
 
     new_status = st.selectbox(
-        "New status",
+        "New Status",
         STATUS_LEVELS,
         index=STATUS_LEVELS.index(row["status"]) if row["status"] in STATUS_LEVELS else 0,
     )
 
     confirm_resolve = True
     if new_status == "Resolved":
-        confirm_resolve = st.checkbox("I confirm the issue is resolved (an email will be sent).", value=False)
+        # Explicit confirmation avoids accidental notifications (human error prevention).
+        confirm_resolve = st.checkbox("I confirm the issue is resolved (and an email will be sent).", value=False)
 
     if st.button("Update"):
         if new_status == "Resolved" and not confirm_resolve:
@@ -1310,8 +1371,8 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 
 
 def page_overview_dashboard(con: sqlite3.Connection) -> None:
-    st.header("Overview dashboard")
-    st.caption("Quick overview of issues and assets.")
+    st.header("Overview Dashboard")
+    st.info("Quick overview of issues and assets.")
 
     issues = fetch_submissions(con)
     assets = fetch_assets(con)
@@ -1323,7 +1384,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
 
     st.divider()
 
-    st.subheader("Open issues")
+    st.subheader("Open issues by status")
     if issues.empty:
         st.info("No issues yet.")
     else:
@@ -1332,12 +1393,12 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             st.success("No open issues.")
         else:
             st.dataframe(
-                open_issues[["id", "issue_type", "room_number", "importance", "status", "created_at"]],
+                style_table(open_issues[["id", "issue_type", "room_number", "importance", "status", "created_at"]]),
                 hide_index=True,
                 use_container_width=True,
             )
 
-    st.subheader("Assets")
+    st.subheader("Assets by status")
     if assets.empty:
         st.info("No assets yet.")
     else:
@@ -1345,7 +1406,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
         assets_view["location"] = assets_view["location_id"].apply(location_label)
 
         st.dataframe(
-            assets_view[["asset_id", "asset_name", "asset_type", "status", "location"]],
+            style_table(assets_view[["asset_id", "asset_name", "asset_type", "status", "location"]]),
             hide_index=True,
             use_container_width=True,
         )
@@ -1366,7 +1427,7 @@ def main() -> None:
             use_container_width=True,
         )
     except FileNotFoundError:
-        st.caption("Header image not found. Add 'campus_header.jpeg' to the repository root.")
+        st.info("Header image not found. Add 'campus_header.jpeg' to the repository root.")
 
     con = get_connection()
     init_db(con)
@@ -1382,17 +1443,22 @@ def main() -> None:
     st.title("Reporting Tool @ HSG")
 
     st.sidebar.markdown("### Navigation")
-    section = st.sidebar.selectbox("Section", ["Reporting Tool", "Booking / Tracking", "Overview"])
+
+    section = st.sidebar.radio("Select section:", ["Reporting Tool", "Booking / Tracking", "Overview"])
 
     if section == "Reporting Tool":
-        page = st.sidebar.selectbox("Page", ["Submission Form", "Submitted Issues", "Overwrite Status"])
-        st.sidebar.caption("Report campus facility issues and track progress.")
+        page = st.sidebar.radio("Select page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
     elif section == "Booking / Tracking":
-        page = st.sidebar.selectbox("Page", ["Booking", "Asset Tracking"])
+        page = st.sidebar.radio("Select page:", ["Booking", "Asset Tracking"])
+    else:
+        page = st.sidebar.radio("Select page:", ["Overview Dashboard"])
+
+    if section == "Reporting Tool":
+        st.sidebar.caption("Report campus facility issues and track resolution.")
+    elif section == "Booking / Tracking":
         st.sidebar.caption("Book assets and manage their locations.")
     else:
-        page = st.sidebar.selectbox("Page", ["Overview Dashboard"])
-        st.sidebar.caption("Key metrics at a glance.")
+        st.sidebar.caption("See key metrics at a glance.")
 
     if page == "Submission Form":
         page_submission_form(con)
