@@ -944,6 +944,12 @@ def page_booking(con: sqlite3.Connection) -> None:
 
     def loc_label(loc_id: str) -> str:
         return LOCATIONS[loc_id]["label"] if loc_id in LOCATIONS else "Unknown location"
+    
+    def pretty_asset_label(row: pd.Series) -> str:
+        status = str(row["status"]).capitalize()
+        location = loc_label(str(row["location_id"]))
+        return f'{row["asset_name"]} • {row["asset_type"]} • {location} • {status}'
+
 
     asset_labels: dict[str, str] = {}
     for _, r in assets_df.iterrows():
@@ -973,8 +979,17 @@ def page_booking(con: sqlite3.Connection) -> None:
     
     asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in filtered_assets.iterrows()}
 
-    asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
-    selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
+    if filtered_assets.empty:
+        st.warning("No assets match your filters.")
+        return
+    
+    asset_id = st.selectbox(
+        "Select asset",
+        options=list(asset_rows.keys()),
+        format_func=lambda aid: asset_rows[aid],
+    )
+
+    selected = filtered_assets[filtered_assets["asset_id"] == asset_id].iloc[0]
     st.write("**Location:**", loc_label(str(selected["location_id"])))
 
 
