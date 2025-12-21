@@ -5,7 +5,7 @@ Developed by: Arthur Lavric & Fabio Patierno
 Features (overview):
 - Issue reporting form (facility issues) stored in SQLite
 - Dashboard of submitted issues + charts + CSV export
-- Admin page to update issue status (password protected) + audit logf
+- Admin page to update issue status (password protected) + audit log
 - Booking page for bookable assets (rooms/equipment/furniture) stored in SQLite
 - Asset tracking page (assets grouped by location; move assets between locations)
 
@@ -54,7 +54,6 @@ ISSUE_TYPES = [
 IMPORTANCE_LEVELS = ["Low", "Medium", "High"]
 STATUS_LEVELS = ["Pending", "In Progress", "Resolved"]
 
-# Expected resolution time by importance (hours)
 SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
     "High": 24,
     "Medium": 72,
@@ -64,8 +63,6 @@ SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
 ROOM_PATTERN = re.compile(r"^[A-Z]\s?\d{2}-\d{3}$")
 
-
-# Simple location model (for tracking). In a real system this could come from a map API.
 LOCATIONS = {
     "R_A_09001": {"label": "Room A 09-001", "x": 10, "y": 20},
     "H_A_09001": {"label": "Hallway near Room A 09-001", "x": 15, "y": 25},
@@ -144,7 +141,7 @@ def iso_to_dt(value: str) -> datetime | None:
     """Parse ISO string to datetime; returns None if invalid."""
     try:
         return datetime.fromisoformat(value)
-    except FileNotFoundError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -166,18 +163,18 @@ def valid_email(hsg_email: str) -> bool:
 
 def valid_room_number(room_number: str) -> bool:
     return bool(ROOM_PATTERN.fullmatch(room_number.strip()))
-    
+
+
 def normalize_room(room_number: str) -> str:
     """
     Normalize room numbers to the canonical format: 'A 09-001'
     Accepts user inputs like 'A09-001' or 'A 09-001'.
     """
     raw = room_number.strip().upper()
-    # Insert a space after the first letter if missing (A09-001 -> A 09-001)
-    raw = re.sub(r"^([A-Z])(\d{2}-\d{3})$", r"\1 \2", raw)
-    # Collapse multiple spaces to one
+    raw = re.sub(r"^([A-Z])(\d{2}-\d{3})$", r"\1 \2", raw)  # A09-001 -> A 09-001
     raw = re.sub(r"\s+", " ", raw)
     return raw
+
 
 def validate_submission_input(sub: Submission) -> list[str]:
     """Validate inputs for issue submission form."""
@@ -277,7 +274,6 @@ def init_db(con: sqlite3.Connection) -> None:
 
 
 def init_booking_table(con: sqlite3.Connection) -> None:
-    """Decouples booking logic from issue reporting; demonstrates extension."""
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS bookings (
@@ -294,7 +290,6 @@ def init_booking_table(con: sqlite3.Connection) -> None:
 
 
 def init_assets_table(con: sqlite3.Connection) -> None:
-    """Assets table used by BOTH booking and tracking."""
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS assets (
@@ -310,7 +305,6 @@ def init_assets_table(con: sqlite3.Connection) -> None:
 
 
 def migrate_db(con: sqlite3.Connection) -> None:
-    """Small migration helper for older DB files (submissions table only)."""
     cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
 
     if "created_at" not in cols:
@@ -357,7 +351,6 @@ def migrate_db(con: sqlite3.Connection) -> None:
 # Database: seed + fetch helpers
 # ----------------------------
 def seed_assets(con: sqlite3.Connection) -> None:
-    """Insert a small set of demo assets (only if not present)."""
     assets = [
         ("ROOM_A", "Study Room A", "Room", "R_A_09001", "available"),
         ("ROOM_B", "Study Room B", "Room", "R_B_10012", "available"),
@@ -444,7 +437,6 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
     )
     active_ids = set(active["asset_id"].tolist())
 
-    # Reset booked -> available, then set active bookings -> booked
     con.execute("UPDATE assets SET status = 'available' WHERE status = 'booked'")
     con.commit()
 
@@ -454,7 +446,6 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
 
 
 def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datetime, end_time: datetime) -> bool:
-    """True if no overlapping booking exists."""
     query = """
         SELECT COUNT(*) FROM bookings
         WHERE asset_id = ?
@@ -469,7 +460,6 @@ def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datet
 
 
 def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFrame:
-    """Upcoming bookings for the selected asset."""
     now_iso = now_zurich().isoformat()
     return pd.read_sql(
         """
@@ -484,6 +474,24 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
     )
 
 
+def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | None:
+    """If currently booked, return the next end_time; otherwise None."""
+    now_iso = now_zurich().isoformat(timespec="seconds")
+    row = con.execute(
+        """
+        SELECT MIN(end_time)
+        FROM bookings
+        WHERE asset_id = ?
+          AND end_time > ?
+        """,
+        (asset_id, now_iso),
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    dt = iso_to_dt(str(row[0]))
+    return dt
+
+
 # ----------------------------
 # Issue admin helpers
 # ----------------------------
@@ -494,7 +502,6 @@ def update_issue_admin_fields(
     assigned_to: str | None,
     old_status: str,
 ) -> None:
-    """Update status/assignment and write audit log (if status changes)."""
     updated_at = now_zurich_str()
     set_resolved_at = (new_status == "Resolved")
 
@@ -532,7 +539,6 @@ def update_issue_admin_fields(
 
 
 def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
-    """Insert issue submission."""
     created_at = now_zurich_str()
     updated_at = created_at
 
@@ -560,7 +566,6 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
 # Email helpers
 # ----------------------------
 def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
-    """Best-effort email sending. Returns (ok, message)."""
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = FROM_EMAIL
@@ -574,7 +579,6 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
             smtp.starttls()
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
             smtp.send_message(msg, to_addrs=recipients)
-
         return True, "Email sent."
     except Exception as exc:
         logger.exception("Email sending failed")
@@ -584,7 +588,6 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
 
 
 def send_admin_report_email(subject: str, body: str) -> tuple[bool, str]:
-    """Send report email to admin inbox."""
     if not ADMIN_INBOX:
         return False, "ADMIN_INBOX is not configured."
 
@@ -651,9 +654,7 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
 
     df = df_all.copy()
     df["created_at_dt"] = pd.to_datetime(df["created_at"], errors="coerce")
-    df["resolved_at_dt"] = pd.to_datetime(
-        df.get("resolved_at", pd.Series([None] * len(df))), errors="coerce"
-    )
+    df["resolved_at_dt"] = pd.to_datetime(df.get("resolved_at", pd.Series([None] * len(df))), errors="coerce")
 
     new_last_7d = df[df["created_at_dt"] >= since_dt]
     resolved_last_7d = df[(df["resolved_at_dt"].notna()) & (df["resolved_at_dt"] >= since_dt)]
@@ -680,7 +681,6 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
 
 
 def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
-    """Runs when app is opened; sends report only if due."""
     if not AUTO_WEEKLY_REPORT:
         return
 
@@ -729,6 +729,33 @@ def render_map_iframe() -> None:
     )
 
 
+def location_label(loc_id: str) -> str:
+    return LOCATIONS.get(str(loc_id), {}).get("label", "Unknown location")
+
+
+def asset_display_label(row: pd.Series) -> str:
+    status = str(row.get("status", "")).strip().lower()
+    status_text = "Available ✅" if status == "available" else ("Booked ⛔" if status == "booked" else str(row.get("status", "")))
+    loc = location_label(str(row.get("location_id", "")))
+    return f'{row.get("asset_name", "")} • {row.get("asset_type", "")} • {loc} • {status_text}'
+
+
+def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Make upcoming bookings easier to read (local time + sorted)."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+    out["start_time"] = pd.to_datetime(out["start_time"], errors="coerce")
+    out["end_time"] = pd.to_datetime(out["end_time"], errors="coerce")
+
+    out = out.dropna(subset=["start_time", "end_time"]).sort_values(by=["start_time"])
+    out["start_time"] = out["start_time"].dt.strftime("%Y-%m-%d %H:%M")
+    out["end_time"] = out["end_time"].dt.strftime("%Y-%m-%d %H:%M")
+
+    return out.rename(columns={"user_name": "User", "start_time": "Start", "end_time": "End"})
+
+
 # ----------------------------
 # Pages
 # ----------------------------
@@ -739,9 +766,9 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
-        hsg_email = st.text_input("HSG Email Address*",placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
+        hsg_email = st.text_input("HSG Email Address*", placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
         st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
-        
+
         room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
 
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
@@ -753,7 +780,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
         user_comment = st.text_area(
             "Problem Description*",
-            max_chars=500,    
+            max_chars=500,
             placeholder="Describe the issue briefly (what/where/since when/impact).",
         ).strip()
         st.caption("Please be concise (max. 500 characters).")
@@ -843,11 +870,7 @@ def render_charts(df: pd.DataFrame) -> None:
             end=df_dates["created_at"].max().date(),
             freq="D",
         )
-        per_day = (
-            df_dates.groupby(df_dates["created_at"].dt.date)
-            .size()
-            .reindex(date_index.date, fill_value=0)
-        )
+        per_day = df_dates.groupby(df_dates["created_at"].dt.date).size().reindex(date_index.date, fill_value=0)
 
         fig, ax = plt.subplots()
         ax.plot(date_index, per_day.values, marker="o")
@@ -908,9 +931,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     df_view["resolved_at_dt"] = pd.to_datetime(df_view.get("resolved_at", None), errors="coerce")
     resolved_only = df_view[df_view["resolved_at_dt"].notna() & df_view["created_at_dt"].notna()].copy()
     if not resolved_only.empty:
-        resolved_only["resolution_hours"] = (
-            (resolved_only["resolved_at_dt"] - resolved_only["created_at_dt"]).dt.total_seconds() / 3600.0
-        )
+        resolved_only["resolution_hours"] = (resolved_only["resolved_at_dt"] - resolved_only["created_at_dt"]).dt.total_seconds() / 3600.0
         st.metric("Avg. resolution time (hours)", f"{float(resolved_only['resolution_hours'].mean()):.1f}")
     else:
         st.metric("Avg. resolution time (hours)", "n/a")
@@ -931,114 +952,112 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         else:
             st.dataframe(log_df, use_container_width=True, hide_index=True)
 
+
 def page_booking(con: sqlite3.Connection) -> None:
     st.header("Booking")
-    st.caption("Fields marked with * are mandatory.")
-
+    st.info("Select an asset, review upcoming bookings, and book an available slot.")
 
     sync_asset_statuses_from_bookings(con)
     assets_df = fetch_assets(con)
+
     if assets_df.empty:
         st.warning("No assets available.")
         return
 
-    def loc_label(loc_id: str) -> str:
-        return LOCATIONS[loc_id]["label"] if loc_id in LOCATIONS else "Unknown location"
-    
-    def pretty_asset_label(row: pd.Series) -> str:
-        status = str(row["status"]).capitalize()
-        location = loc_label(str(row["location_id"]))
-        return f'{row["asset_name"]} • {row["asset_type"]} • {location} • {status}'
+    # Simple search (no filters by type / availability)
+    search = st.text_input("Search asset (name/type/location)", placeholder="e.g., projector, meeting, A 09-001").strip().lower()
 
+    view_df = assets_df.copy()
+    view_df["location_label"] = view_df["location_id"].apply(location_label)
+    view_df["label"] = view_df.apply(asset_display_label, axis=1)
 
-    asset_labels: dict[str, str] = {}
-    for _, r in assets_df.iterrows():
-        asset_labels[str(r["asset_id"])] = (
-            f'{r["asset_name"]} ({r["asset_type"]}) — {loc_label(str(r["location_id"]))} [{r["status"]}]'
+    if search:
+        mask = (
+            view_df["asset_name"].str.lower().str.contains(search, na=False)
+            | view_df["asset_type"].str.lower().str.contains(search, na=False)
+            | view_df["location_label"].str.lower().str.contains(search, na=False)
         )
+        view_df = view_df[mask].copy()
 
-    st.subheader("Select asset")
-    
-    col1, col2 = st.columns(2)
-    type_filter = col1.multiselect(
-        "Filter by type",
-        options=sorted(assets_df["asset_type"].unique()),
-        default=sorted(assets_df["asset_type"].unique()),
-    )
-    
-    status_filter2 = col2.multiselect(
-        "Filter by status",
-        options=sorted(assets_df["status"].unique()),
-        default=sorted(assets_df["status"].unique()),
-    )
-    
-    filtered_assets = assets_df[
-        (assets_df["asset_type"].isin(type_filter)) &
-        (assets_df["status"].isin(status_filter2))
-    ].copy()
-    
-    asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in filtered_assets.iterrows()}
-
-    if filtered_assets.empty:
-        st.warning("No assets match your filters.")
+    if view_df.empty:
+        st.warning("No assets match your search.")
         return
-    
+
+    # Available assets first in the dropdown
+    view_df["_status_rank"] = view_df["status"].astype(str).str.lower().map({"available": 0, "booked": 1}).fillna(99).astype(int)
+    view_df = view_df.sort_values(by=["_status_rank", "asset_type", "asset_name"]).drop(columns=["_status_rank"])
+
+    asset_rows: dict[str, str] = {str(r["asset_id"]): str(r["label"]) for _, r in view_df.iterrows()}
+
+    default_asset_id = st.session_state.get("booking_asset_id")
+    if default_asset_id not in asset_rows:
+        default_asset_id = list(asset_rows.keys())[0]
+
     asset_id = st.selectbox(
-        "Select asset",
+        "Asset",
         options=list(asset_rows.keys()),
+        index=list(asset_rows.keys()).index(default_asset_id),
         format_func=lambda aid: asset_rows[aid],
     )
+    st.session_state["booking_asset_id"] = asset_id
 
-    selected = filtered_assets[filtered_assets["asset_id"] == asset_id].iloc[0]
-    st.write("**Location:**", loc_label(str(selected["location_id"])))
+    selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
+    selected_status = str(selected["status"]).strip().lower()
 
+    st.write("**Location:**", location_label(str(selected["location_id"])))
 
-    status = str(selected["status"]).lower()
-    if status == "available":
+    if selected_status == "available":
         st.success("Status: Available ✅")
-    elif status == "booked":
-        st.warning("Status: Booked ⛔")
+    elif selected_status == "booked":
+        next_free = next_available_time(con, asset_id)
+        if next_free is not None:
+            st.warning(f"Status: Booked ⛔  •  Next available: {next_free.strftime('%Y-%m-%d %H:%M')}")
+        else:
+            st.warning("Status: Booked ⛔")
     else:
         st.info(f"Status: {selected['status']}")
-
 
     st.subheader("Upcoming bookings")
     future = fetch_future_bookings(con, asset_id)
     if future.empty:
-        st.info("No upcoming bookings.")
+        st.caption("No upcoming bookings.")
     else:
-        st.dataframe(future, hide_index=True, use_container_width=True)
-
-    if selected["status"] != "available":
-        st.warning("This asset is currently not available for booking.")
-        return
+        st.dataframe(format_booking_table(future), hide_index=True, use_container_width=True)
 
     st.divider()
-    st.subheader("Book this asset")
+    st.subheader("Create booking")
+
+    if selected_status != "available":
+        st.info("This asset is currently not available. Please choose a different asset or try later.")
+        return
 
     with st.form("booking_form"):
-        user_name = st.text_input("Your name*",placeholder="e.g., Max Muster")
-        start_date = st.date_input("Start date*")
-        start_time = st.time_input("Start time*")
-        duration_hours = st.number_input("Duration (hours)*", min_value=1, max_value=12, value=1, step=1)
+        user_name = st.text_input("Your name*", placeholder="e.g., Max Muster").strip()
+
+        c1, c2, c3 = st.columns(3)
+        start_date = c1.date_input("Start date*", value=now_zurich().date())
+        start_time = c2.time_input("Start time*", value=now_zurich().time().replace(second=0, microsecond=0))
+        duration_hours = c3.number_input("Duration (hours)*", min_value=1, max_value=12, value=1, step=1)
+
         submit = st.form_submit_button("Confirm booking")
 
     if not submit:
         return
 
-    if not user_name.strip():
-        if start_date is None or start_time is None:
-            st.error("Start date and start time are required.")
+    if not user_name:
         st.error("Name is required.")
         return
 
-    # Build timezone-aware datetimes (Zurich)
     start_dt_naive = datetime.combine(start_date, start_time)
     start_dt = APP_TZ.localize(start_dt_naive)
     end_dt = start_dt + timedelta(hours=float(duration_hours))
 
     if start_dt < now_zurich():
         st.error("Start time cannot be in the past.")
+        return
+
+    if end_dt <= start_dt:
+        st.error("End time must be after start time.")
         return
 
     if not is_asset_available(con, asset_id, start_dt, end_dt):
@@ -1052,7 +1071,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         """,
         (
             asset_id,
-            user_name.strip(),
+            user_name,
             start_dt.isoformat(timespec="seconds"),
             end_dt.isoformat(timespec="seconds"),
             now_zurich_str(),
@@ -1061,7 +1080,7 @@ def page_booking(con: sqlite3.Connection) -> None:
     con.commit()
 
     sync_asset_statuses_from_bookings(con)
-    st.success("Booking confirmed.")
+    st.success(f"Booking confirmed: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%H:%M')}")
     st.rerun()
 
 
@@ -1074,9 +1093,7 @@ def page_assets(con: sqlite3.Connection) -> None:
         return
 
     df = df.copy()
-    df["location_label"] = df["location_id"].apply(
-        lambda lid: LOCATIONS[lid]["label"] if lid in LOCATIONS else "Unknown location"
-    )
+    df["location_label"] = df["location_id"].apply(location_label)
 
     st.subheader("Filters")
     location_filter = st.multiselect(
@@ -1100,15 +1117,10 @@ def page_assets(con: sqlite3.Connection) -> None:
     st.divider()
 
     assets_df = fetch_assets(con).copy()
-    assets_df["location_label"] = assets_df["location_id"].apply(
-        lambda lid: LOCATIONS.get(str(lid), {}).get("label", "Unknown location")
-    )
-    
-    def pretty_asset_label(row: pd.Series) -> str:
-        status = str(row["status"]).capitalize()
-        return f'{row["asset_name"]} • {row["asset_type"]} • {row["location_label"]} • {status}'
-    
-    asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in assets_df.iterrows()}
+    assets_df["location_label"] = assets_df["location_id"].apply(location_label)
+    assets_df["label"] = assets_df.apply(asset_display_label, axis=1)
+
+    asset_rows = {str(r["asset_id"]): str(r["label"]) for _, r in assets_df.iterrows()}
 
     asset_id = st.selectbox(
         "Select asset",
@@ -1119,14 +1131,11 @@ def page_assets(con: sqlite3.Connection) -> None:
     asset = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
 
     st.subheader("Selected asset")
-
     c1, c2, c3 = st.columns(3)
     c1.metric("Status", str(asset["status"]).capitalize())
     c2.metric("Type", str(asset["asset_type"]))
     c3.metric("Asset ID", str(asset["asset_id"]))
-
     st.write("**Location:**", str(asset["location_label"]))
-
 
     st.subheader("Move asset to another location")
     new_location_id = st.selectbox(
@@ -1206,9 +1215,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
     assigned_to = st.selectbox(
         "Assigned to",
         options=["(unassigned)"] + ASSIGNEES,
-        index=(["(unassigned)"] + ASSIGNEES).index(current_assignee)
-        if current_assignee in (["(unassigned)"] + ASSIGNEES)
-        else 0,
+        index=(["(unassigned)"] + ASSIGNEES).index(current_assignee) if current_assignee in (["(unassigned)"] + ASSIGNEES) else 0,
     )
     assigned_to_value = None if assigned_to == "(unassigned)" else assigned_to
 
@@ -1249,7 +1256,6 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
         st.rerun()
 
 
-# ✅ Needed: otherwise "Overview Dashboard" would incorrectly open Overwrite Status
 def page_overview_dashboard(con: sqlite3.Connection) -> None:
     st.header("Overview Dashboard")
     st.info("Quick overview of issues and assets.")
@@ -1281,12 +1287,9 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
     st.subheader("Assets by status")
     if assets.empty:
         st.info("No assets yet.")
-
     else:
         assets_view = assets.copy()
-        assets_view["location"] = assets_view["location_id"].apply(
-            lambda lid: LOCATIONS.get(str(lid), {}).get("label", "Unknown location")
-        )
+        assets_view["location"] = assets_view["location_id"].apply(location_label)
 
         st.dataframe(
             assets_view[["asset_id", "asset_name", "asset_type", "status", "location"]],
@@ -1325,29 +1328,16 @@ def main() -> None:
 
     st.title("Reporting Tool @ HSG")
 
-    # Sidebar navigation with 3 sections (categories)
     st.sidebar.markdown("### Navigation")
 
-    section = st.sidebar.radio(
-        "Select section:",
-        ["Reporting Tool", "Booking / Tracking", "Overview"],
-    )
+    section = st.sidebar.radio("Select section:", ["Reporting Tool", "Booking / Tracking", "Overview"])
 
     if section == "Reporting Tool":
-        page = st.sidebar.radio(
-            "Select page:",
-            ["Submission Form", "Submitted Issues", "Overwrite Status"],
-        )
+        page = st.sidebar.radio("Select page:", ["Submission Form", "Submitted Issues", "Overwrite Status"])
     elif section == "Booking / Tracking":
-        page = st.sidebar.radio(
-            "Select page:",
-            ["Booking", "Asset Tracking"],
-        )
-    else:  # Overview
-        page = st.sidebar.radio(
-            "Select page:",
-            ["Overview Dashboard"],
-        )
+        page = st.sidebar.radio("Select page:", ["Booking", "Asset Tracking"])
+    else:
+        page = st.sidebar.radio("Select page:", ["Overview Dashboard"])
 
     if section == "Reporting Tool":
         st.sidebar.caption("Report campus facility issues and track resolution.")
