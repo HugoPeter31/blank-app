@@ -762,10 +762,6 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded Photo (not stored)", use_container_width=True)
 
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
-        if sla_hours is not None:
-            st.info(f"Expected handling time: within {sla_hours} hours.")
-
         render_map_iframe()
         submitted = st.form_submit_button("Submit")
 
