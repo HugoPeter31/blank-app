@@ -5,7 +5,7 @@ Developed by: Arthur Lavric & Fabio Patierno
 Features (overview):
 - Issue reporting form (facility issues) stored in SQLite
 - Dashboard of submitted issues + charts + CSV export
-- Admin page to update issue status (password protected) + audit log
+- Admin page to update issue status (password protected) + audit logf
 - Booking page for bookable assets (rooms/equipment/furniture) stored in SQLite
 - Asset tracking page (assets grouped by location; move assets between locations)
 
@@ -933,6 +933,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
 def page_booking(con: sqlite3.Connection) -> None:
     st.header("Booking")
+    st.caption("Fields marked with * are mandatory.")
+
 
     sync_asset_statuses_from_bookings(con)
     assets_df = fetch_assets(con)
@@ -977,6 +979,8 @@ def page_booking(con: sqlite3.Connection) -> None:
         return
 
     if not user_name.strip():
+        if start_date is None or start_time is None:
+            st.error("Start date and start time are required.")
         st.error("Name is required.")
         return
 
