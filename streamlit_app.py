@@ -746,7 +746,16 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
-        user_comment = st.text_area("Problem Description*",placeholder="Describe the issue briefly (what/where/since when/impact).", max_chars=500).strip()
+
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+        if sla_hours is not None:
+            st.info(f"Expected handling time (SLA): within {sla_hours} hours.")
+
+        user_comment = st.text_area(
+            "Problem Description*",
+            max_chars=500,    
+            placeholder="Describe the issue briefly (what/where/since when/impact).",
+        ).strip()
         st.caption("Please be concise (max. 500 characters).")
 
         uploaded_file = st.file_uploader("Upload a Photo (optional)", type=["jpg", "jpeg", "png"])
