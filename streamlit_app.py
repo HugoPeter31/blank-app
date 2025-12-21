@@ -951,6 +951,28 @@ def page_booking(con: sqlite3.Connection) -> None:
             f'{r["asset_name"]} ({r["asset_type"]}) — {loc_label(str(r["location_id"]))} [{r["status"]}]'
         )
 
+    st.subheader("Select asset")
+    
+    col1, col2 = st.columns(2)
+    type_filter = col1.multiselect(
+        "Filter by type",
+        options=sorted(assets_df["asset_type"].unique()),
+        default=sorted(assets_df["asset_type"].unique()),
+    )
+    
+    status_filter2 = col2.multiselect(
+        "Filter by status",
+        options=sorted(assets_df["status"].unique()),
+        default=sorted(assets_df["status"].unique()),
+    )
+    
+    filtered_assets = assets_df[
+        (assets_df["asset_type"].isin(type_filter)) &
+        (assets_df["status"].isin(status_filter2))
+    ].copy()
+    
+    asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in filtered_assets.iterrows()}
+
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
     st.write("**Location:**", loc_label(str(selected["location_id"])))
@@ -1063,19 +1085,36 @@ def page_assets(con: sqlite3.Connection) -> None:
     st.divider()
 
     assets_df = fetch_assets(con)
-    asset_labels = {row["asset_id"]: f'{row["asset_name"]} [{row["status"]}]' for _, row in assets_df.iterrows()}
+    assets_df = fetch_assets(con).copy()
+    assets_df["location_label"] = assets_df["location_id"].apply(
+        lambda lid: LOCATIONS.get(str(lid), {}).get("label", "Unknown location")
+    )
+    
+    def pretty_asset_label(row: pd.Series) -> str:
+        status = str(row["status"]).capitalize()
+        return f'{row["asset_name"]} • {row["asset_type"]} • {row["location_label"]} • {status}'
+    
+    asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in assets_df.iterrows()}
+    
+    asset_id = st.selectbox(
+        "Select asset",
+        options=list(asset_rows.keys()),
+        format_func=lambda aid: asset_rows[aid],
+    )
 
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     asset = df[df["asset_id"] == asset_id].iloc[0]
 
-    st.write(
-        {
-            "Asset ID": asset["asset_id"],
-            "Type": asset["asset_type"],
-            "Current location": asset["location_label"],
-            "Status": asset["status"],
-        }
-    )
+
+    st.subheader("Selected asset")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Status", str(asset["status"]).capitalize())
+    c2.metric("Type", str(asset["asset_type"]))
+    c3.metric("Asset ID", str(asset["asset_id"]))
+
+    st.write("**Location:**", str(asset["location_label"]))
+
 
     st.subheader("Move asset to another location")
     new_location_id = st.selectbox(
