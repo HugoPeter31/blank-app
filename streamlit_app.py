@@ -62,7 +62,8 @@ SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
 }
 
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
-ROOM_PATTERN = re.compile(r"^[A-Z] \d{2}-\d{3}$")
+ROOM_PATTERN = re.compile(r"^[A-Z]\s?\d{2}-\d{3}$")
+
 
 # Simple location model (for tracking). In a real system this could come from a map API.
 LOCATIONS = {
@@ -165,7 +166,18 @@ def valid_email(hsg_email: str) -> bool:
 
 def valid_room_number(room_number: str) -> bool:
     return bool(ROOM_PATTERN.fullmatch(room_number.strip()))
-
+    
+def normalize_room(room_number: str) -> str:
+    """
+    Normalize room numbers to the canonical format: 'A 09-001'
+    Accepts user inputs like 'A09-001' or 'A 09-001'.
+    """
+    raw = room_number.strip().upper()
+    # Insert a space after the first letter if missing (A09-001 -> A 09-001)
+    raw = re.sub(r"^([A-Z])(\d{2}-\d{3})$", r"\1 \2", raw)
+    # Collapse multiple spaces to one
+    raw = re.sub(r"\s+", " ", raw)
+    return raw
 
 def validate_submission_input(sub: Submission) -> list[str]:
     """Validate inputs for issue submission form."""
@@ -535,7 +547,7 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
                 sub.name.strip(),
                 sub.hsg_email.strip().lower(),
                 sub.issue_type,
-                sub.room_number.strip().upper(),
+                normalize_room(sub.room_number),
                 sub.importance,
                 sub.user_comment.strip(),
                 created_at,
@@ -730,7 +742,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         hsg_email = st.text_input("HSG Email Address*",placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
         st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
         
-        room_number = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
+        room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
 
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
@@ -755,7 +767,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         name=name,
         hsg_email=hsg_email.strip().lower(),
         issue_type=issue_type,
-        room_number=room_number.strip().upper(),
+        room_number=normalize_room(room_number_input),
         importance=importance,
         user_comment=user_comment,
     )
