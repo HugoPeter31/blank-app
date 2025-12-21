@@ -42,6 +42,10 @@ APP_TZ = pytz.timezone("Europe/Zurich")
 DB_PATH = "hsg_reporting.db"
 LOGO_PATH = "HSG-logo-new.png"
 
+# HSG brand green (used for table header styling)
+# Source: HSG brand assets color listing :contentReference[oaicite:0]{index=0}
+HSG_GREEN = "#00802F"
+
 ISSUE_TYPES = [
     "Lighting issues",
     "Sanitary problems",
@@ -750,6 +754,54 @@ def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
 # ----------------------------
 # UI helpers
 # ----------------------------
+def apply_hsg_table_header_style() -> None:
+    """
+    Enforce HSG-green table headers across Streamlit tables.
+
+    Why: Streamlit's default header styling is grey. We inject CSS once so every table
+    (st.dataframe / st.table / built-in grid headers) stays visually consistent and needs
+    no per-table styling, which keeps UI code maintainable.
+    """
+    st.markdown(
+        f"""
+        <style>
+        /* st.table() (HTML table) */
+        div[data-testid="stTable"] thead tr th {{
+            background-color: {HSG_GREEN} !important;
+            color: #ffffff !important;
+        }}
+
+        /* st.dataframe() (Arrow table / HTML fallback) */
+        div[data-testid="stDataFrame"] thead tr th {{
+            background-color: {HSG_GREEN} !important;
+            color: #ffffff !important;
+        }}
+
+        /* st.dataframe() uses a grid in many versions (AgGrid-like). Target header cells. */
+        div[data-testid="stDataFrame"] .ag-header {{
+            background-color: {HSG_GREEN} !important;
+        }}
+        div[data-testid="stDataFrame"] .ag-header-cell,
+        div[data-testid="stDataFrame"] .ag-header-group-cell {{
+            background-color: {HSG_GREEN} !important;
+        }}
+        div[data-testid="stDataFrame"] .ag-header-cell-text,
+        div[data-testid="stDataFrame"] .ag-header-group-text,
+        div[data-testid="stDataFrame"] .ag-header-cell-label {{
+            color: #ffffff !important;
+            font-weight: 600 !important;
+        }}
+
+        /* Optional: make the column header separators subtle */
+        div[data-testid="stDataFrame"] .ag-header-cell::after {{
+            opacity: 0.25 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def show_errors(errors: Iterable[str]) -> None:
     for msg in errors:
         st.error(msg)
@@ -1356,6 +1408,9 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
 # ----------------------------
 def main() -> None:
     st.set_page_config(page_title="Reporting Tool @ HSG", layout="centered")
+
+    # Apply once so every table header stays HSG-green without repeating styling per table.
+    apply_hsg_table_header_style()
 
     show_logo()
 
