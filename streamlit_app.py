@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-"""
-Reporting Tool @ HSG (via Streamlit)
-Developed by: Arthur Lavric & Fabio Patierno
-----------------------------
-Features (overview):
- - Issue reporting form (facility issues) stored in SQLite
- - Dashboard of submitted issues + charts + CSV export
- - Admin page to update issue status (password protected) + audit log
- - Booking page for bookable assets (rooms/equipment/furniture) stored in SQLite
- - Asset tracking page (assets grouped by location; move assets between locations)
-
-Note:
- - Admin page is protected via Streamlit secrets (ADMIN_PASSWORD).
- - Email sending requires SMTP secrets (see .streamlit/secrets.toml).
-"""
+# ----------------------------
+# Reporting Tool @ HSG (via Streamlit)
+# Developed by: Arthur Lavric & Fabio Patierno
+# ----------------------------
+# Features (overview):
+# - Issue reporting form (facility issues) stored in SQLite
+# - Dashboard of submitted issues + charts + CSV export
+# - Admin page to update issue status (password protected) + audit log
+# - Booking page for bookable assets (rooms/equipment/furniture) stored in SQLite
+# - Asset tracking page (assets grouped by location; move assets between locations)
+#
+# Note:
+# - Admin page is protected via Streamlit secrets (ADMIN_PASSWORD).
+# - Email sending requires SMTP secrets (see .streamlit/secrets.toml).
+# ----------------------------
 
 # ----------------------------
 # Imports
@@ -41,10 +41,6 @@ import streamlit as st
 APP_TZ = pytz.timezone("Europe/Zurich")
 DB_PATH = "hsg_reporting.db"
 LOGO_PATH = "HSG-logo-new.png"
-
-# Visual identity (adjust once here, instead of chasing styles throughout the app)
-# NOTE: If your course provides an official HSG green hex code, replace it here.
-HSG_GREEN = "#007A33"
 
 ISSUE_TYPES = [
     "Lighting issues",
@@ -164,35 +160,6 @@ def is_room_location(location_id: str) -> bool:
     return str(location_id).startswith("R_")
 
 
-def style_dataframe(df: pd.DataFrame) -> pd.io.formats.style.Styler:
-    """
-    Apply a consistent table style across the app.
-
-    Why:
-    - Centralizes UI decisions (HSG green header) so you don't repeat CSS everywhere.
-    - Makes grading easier: one clean styling approach, reused consistently.
-    """
-    return df.style.set_table_styles(
-        [
-            {
-                "selector": "th",
-                "props": [
-                    ("background-color", HSG_GREEN),
-                    ("color", "white"),
-                    ("font-weight", "600"),
-                    ("border", "1px solid #e6e6e6"),
-                ],
-            },
-            {
-                "selector": "td",
-                "props": [
-                    ("border", "1px solid #f0f0f0"),
-                ],
-            },
-        ]
-    )
-
-
 # ----------------------------
 # Validation
 # ----------------------------
@@ -260,10 +227,7 @@ def validate_admin_email(email: str) -> list[str]:
 def get_connection() -> sqlite3.Connection:
     """
     Create and cache a SQLite connection.
-
-    Why:
-    - Streamlit reruns the script frequently; caching prevents re-opening connections
-      and avoids locking issues / performance overhead.
+    (Streamlit reruns the script; caching prevents opening a new DB connection on every rerun.)
     """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -511,12 +475,19 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
         location_id = row["location_id"]
 
         # Always mark the booked asset
-        con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (asset_id,))
+        con.execute(
+            "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
+            (asset_id,),
+        )
 
         # Auto-book assets inside a room
         if asset_type == "Room" and is_room_location(location_id):
-            for inside_id in fetch_assets_in_room(con, location_id):
-                con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (inside_id,))
+            inside_assets = fetch_assets_in_room(con, location_id)
+            for aid in inside_assets:
+                con.execute(
+                    "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
+                    (aid,),
+                )
 
     con.commit()
 
@@ -1012,7 +983,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
     display_df = build_display_table(df_view)
     st.subheader("List of submitted issues")
-    st.dataframe(style_dataframe(display_df), use_container_width=True, hide_index=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     csv_bytes = df_view.to_csv(index=False).encode("utf-8")
     st.download_button("Download CSV", data=csv_bytes, file_name="hsg_reporting_issues.csv", mime="text/csv")
@@ -1024,7 +995,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         if log_df.empty:
             st.info("No status changes recorded yet.")
         else:
-            st.dataframe(style_dataframe(log_df), use_container_width=True, hide_index=True)
+            st.dataframe(log_df, use_container_width=True, hide_index=True)
 
 
 def page_booking(con: sqlite3.Connection) -> None:
@@ -1098,7 +1069,7 @@ def page_booking(con: sqlite3.Connection) -> None:
     if future.empty:
         st.caption("No upcoming bookings.")
     else:
-        st.dataframe(style_dataframe(format_booking_table(future)), hide_index=True, use_container_width=True)
+        st.dataframe(format_booking_table(future), hide_index=True, use_container_width=True)
 
     st.divider()
     st.subheader("Create booking")
@@ -1189,7 +1160,7 @@ def page_assets(con: sqlite3.Connection) -> None:
     for location, group in filtered_df.groupby("location_label"):
         with st.expander(f"{location} ({len(group)})", expanded=False):
             st.dataframe(
-                style_dataframe(group[["asset_id", "asset_name", "asset_type", "status"]]),
+                group[["asset_id", "asset_name", "asset_type", "status"]],
                 hide_index=True,
                 use_container_width=True,
             )
@@ -1361,7 +1332,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             st.success("No open issues.")
         else:
             st.dataframe(
-                style_dataframe(open_issues[["id", "issue_type", "room_number", "importance", "status", "created_at"]]),
+                open_issues[["id", "issue_type", "room_number", "importance", "status", "created_at"]],
                 hide_index=True,
                 use_container_width=True,
             )
@@ -1374,7 +1345,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
         assets_view["location"] = assets_view["location_id"].apply(location_label)
 
         st.dataframe(
-            style_dataframe(assets_view[["asset_id", "asset_name", "asset_type", "status", "location"]]),
+            assets_view[["asset_id", "asset_name", "asset_type", "status", "location"]],
             hide_index=True,
             use_container_width=True,
         )
