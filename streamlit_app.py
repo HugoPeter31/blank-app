@@ -953,6 +953,8 @@ def page_booking(con: sqlite3.Connection) -> None:
 
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
+    st.write("**Location:**", loc_label(str(selected["location_id"])))
+
 
     status = str(selected["status"]).lower()
     if status == "available":
@@ -1228,8 +1230,18 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
     st.subheader("Assets by status")
     if assets.empty:
         st.info("No assets yet.")
+
     else:
-        st.dataframe(assets[["asset_id", "asset_name", "asset_type", "status", "location_id"]], hide_index=True, use_container_width=True)
+        assets_view = assets.copy()
+        assets_view["location"] = assets_view["location_id"].apply(
+            lambda lid: LOCATIONS.get(str(lid), {}).get("label", "Unknown location")
+        )
+
+        st.dataframe(
+            assets_view[["asset_id", "asset_name", "asset_type", "status", "location"]],
+            hide_index=True,
+            use_container_width=True,
+        )
 
 
 # ----------------------------
