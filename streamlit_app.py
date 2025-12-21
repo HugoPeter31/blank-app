@@ -216,6 +216,7 @@ def get_connection() -> sqlite3.Connection:
     """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+
 def init_db(con: sqlite3.Connection) -> None:
     """Create core tables for the issue reporting module."""
     con.execute(
@@ -597,7 +598,11 @@ def send_admin_report_email(subject: str, body: str) -> tuple[bool, str]:
 def confirmation_email_text(recipient_name: str, importance: str) -> tuple[str, str]:
     subject = "Issue received!"
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
-    sla_text = f"Expected handling time (SLA): within {sla_hours} hours." if sla_hours is not None else "Expected handling time (SLA): n/a."
+    sla_text = (
+        f"Expected handling time (SLA): within {sla_hours} hours."
+        if sla_hours is not None
+        else "Expected handling time (SLA): n/a."
+    )
 
     body = f"""Dear {recipient_name},
 
@@ -634,7 +639,9 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
 
     df = df_all.copy()
     df["created_at_dt"] = pd.to_datetime(df["created_at"], errors="coerce")
-    df["resolved_at_dt"] = pd.to_datetime(df.get("resolved_at", pd.Series([None] * len(df))), errors="coerce")
+    df["resolved_at_dt"] = pd.to_datetime(
+        df.get("resolved_at", pd.Series([None] * len(df))), errors="coerce"
+    )
 
     new_last_7d = df[df["created_at_dt"] >= since_dt]
     resolved_last_7d = df[(df["resolved_at_dt"].notna()) & (df["resolved_at_dt"] >= since_dt)]
@@ -884,7 +891,9 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     df_view["resolved_at_dt"] = pd.to_datetime(df_view.get("resolved_at", None), errors="coerce")
     resolved_only = df_view[df_view["resolved_at_dt"].notna() & df_view["created_at_dt"].notna()].copy()
     if not resolved_only.empty:
-        resolved_only["resolution_hours"] = (resolved_only["resolved_at_dt"] - resolved_only["created_at_dt"]).dt.total_seconds() / 3600.0
+        resolved_only["resolution_hours"] = (
+            (resolved_only["resolved_at_dt"] - resolved_only["created_at_dt"]).dt.total_seconds() / 3600.0
+        )
         st.metric("Avg. resolution time (hours)", f"{float(resolved_only['resolution_hours'].mean()):.1f}")
     else:
         st.metric("Avg. resolution time (hours)", "n/a")
@@ -906,6 +915,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
             st.dataframe(log_df, use_container_width=True, hide_index=True)
 
 
+# ✅ FIXED (indentation + removed duplicate availability checks)
 def page_booking(con: sqlite3.Connection) -> None:
     st.header("Booking")
 
@@ -927,9 +937,6 @@ def page_booking(con: sqlite3.Connection) -> None:
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
 
-   if selected["status"] != "available":
-       st.warning("This asset is currently not available for booking.")
-       
     st.subheader("Upcoming bookings")
     future = fetch_future_bookings(con, asset_id)
     if future.empty:
@@ -937,10 +944,6 @@ def page_booking(con: sqlite3.Connection) -> None:
     else:
         st.dataframe(future, hide_index=True, use_container_width=True)
 
-    if selected["status"] != "available":
-        return
-
-    
     if selected["status"] != "available":
         st.warning("This asset is currently not available for booking.")
         return
@@ -965,7 +968,7 @@ def page_booking(con: sqlite3.Connection) -> None:
     # Build timezone-aware datetimes (Zurich)
     start_dt_naive = datetime.combine(start_date, start_time)
     start_dt = APP_TZ.localize(start_dt_naive)
-    end_dt = start_dt + timedelta(hours=duration_hours)
+    end_dt = start_dt + timedelta(hours=float(duration_hours))
 
     if start_dt < now_zurich():
         st.error("Start time cannot be in the past.")
@@ -992,6 +995,7 @@ def page_booking(con: sqlite3.Connection) -> None:
 
     sync_asset_statuses_from_bookings(con)
     st.success("Booking confirmed.")
+    st.rerun()
 
 
 def page_assets(con: sqlite3.Connection) -> None:
@@ -1028,12 +1032,8 @@ def page_assets(con: sqlite3.Connection) -> None:
 
     st.divider()
 
-    # Select asset to view and move
     assets_df = fetch_assets(con)
-    asset_labels = {
-        row["asset_id"]: f'{row["asset_name"]} [{row["status"]}]'
-        for _, row in assets_df.iterrows()
-    }
+    asset_labels = {row["asset_id"]: f'{row["asset_name"]} [{row["status"]}]' for _, row in assets_df.iterrows()}
 
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     asset = df[df["asset_id"] == asset_id].iloc[0]
@@ -1125,7 +1125,9 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
     assigned_to = st.selectbox(
         "Assigned to",
         options=["(unassigned)"] + ASSIGNEES,
-        index=(["(unassigned)"] + ASSIGNEES).index(current_assignee) if current_assignee in (["(unassigned)"] + ASSIGNEES) else 0,
+        index=(["(unassigned)"] + ASSIGNEES).index(current_assignee)
+        if current_assignee in (["(unassigned)"] + ASSIGNEES)
+        else 0,
     )
     assigned_to_value = None if assigned_to == "(unassigned)" else assigned_to
 
@@ -1164,6 +1166,42 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 
         st.success("Update successful.")
         st.rerun()
+
+
+# ✅ Needed: otherwise "Overview Dashboard" would incorrectly open Overwrite Status
+def page_overview_dashboard(con: sqlite3.Connection) -> None:
+    st.header("Overview Dashboard")
+    st.info("Quick overview of issues and assets.")
+
+    issues = fetch_submissions(con)
+    assets = fetch_assets(con)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total issues", str(len(issues)))
+    c2.metric("Open issues", str(int((issues["status"] != "Resolved").sum())) if not issues.empty else "0")
+    c3.metric("Total assets", str(len(assets)))
+
+    st.divider()
+
+    st.subheader("Open issues by status")
+    if issues.empty:
+        st.info("No issues yet.")
+    else:
+        open_issues = issues[issues["status"] != "Resolved"]
+        if open_issues.empty:
+            st.success("No open issues.")
+        else:
+            st.dataframe(
+                open_issues[["id", "issue_type", "room_number", "importance", "status", "created_at"]],
+                hide_index=True,
+                use_container_width=True,
+            )
+
+    st.subheader("Assets by status")
+    if assets.empty:
+        st.info("No assets yet.")
+    else:
+        st.dataframe(assets[["asset_id", "asset_name", "asset_type", "status", "location_id"]], hide_index=True, use_container_width=True)
 
 
 # ----------------------------
@@ -1228,6 +1266,8 @@ def main() -> None:
         page_booking(con)
     elif page == "Asset Tracking":
         page_assets(con)
+    elif page == "Overview Dashboard":
+        page_overview_dashboard(con)
     else:
         page_overwrite_status(con)
 
