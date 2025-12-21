@@ -1,4 +1,8 @@
-# Programming with Advanced Computer Languages - Group Project (Lavric & Patierno)
+# Reporting Tool @ HSG 
 
-Reporting Tool at HSG is a Streamlit-based web application that enables members of the University of St. Gallen community to report facility-related issues through a simple, user-friendly interface. Submissions are stored in a database and can be managed via a password-protected admin area, where issues can be assigned, tracked by status and resolved. The tool includes email notifications, analytics as well as reporting features to support a professional and efficient facilities management workflow.
+The Reporting Tool @ HSG is a comprehensive Streamlit-based web application designed to support the University of St. Gallen’s facilities and infrastructure management through a structured, efficient, and user-friendly digital workflow.
+
+The application allows members of the HSG community to report facility-related issues, book shared assets, and track resources, while providing facility management with robust administrative, reporting, and monitoring capabilities.
+
+Programming with Advanced Computer Languages - Group Project (Lavric & Patierno)
 
