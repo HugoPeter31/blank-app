@@ -144,7 +144,7 @@ def iso_to_dt(value: str) -> datetime | None:
     """Parse ISO string to datetime; returns None if invalid."""
     try:
         return datetime.fromisoformat(value)
-    except FileNotFoundError:
+    except Exception:
         return None
 
 
@@ -166,7 +166,8 @@ def valid_email(hsg_email: str) -> bool:
 
 def valid_room_number(room_number: str) -> bool:
     return bool(ROOM_PATTERN.fullmatch(room_number.strip()))
-    
+
+
 def normalize_room(room_number: str) -> str:
     """
     Normalize room numbers to the canonical format: 'A 09-001'
@@ -178,6 +179,7 @@ def normalize_room(room_number: str) -> str:
     # Collapse multiple spaces to one
     raw = re.sub(r"\s+", " ", raw)
     return raw
+
 
 def validate_submission_input(sub: Submission) -> list[str]:
     """Validate inputs for issue submission form."""
@@ -739,9 +741,9 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
-        hsg_email = st.text_input("HSG Email Address*",placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
+        hsg_email = st.text_input("HSG Email Address*", placeholder="e.g. firstname.lastname@student.unisg.ch").strip()
         st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
-        
+
         room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
 
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
@@ -753,7 +755,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
         user_comment = st.text_area(
             "Problem Description*",
-            max_chars=500,    
+            max_chars=500,
             placeholder="Describe the issue briefly (what/where/since when/impact).",
         ).strip()
         st.caption("Please be concise (max. 500 characters).")
@@ -931,10 +933,10 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         else:
             st.dataframe(log_df, use_container_width=True, hide_index=True)
 
+
 def page_booking(con: sqlite3.Connection) -> None:
     st.header("Booking")
     st.caption("Fields marked with * are mandatory.")
-
 
     sync_asset_statuses_from_bookings(con)
     assets_df = fetch_assets(con)
@@ -944,72 +946,51 @@ def page_booking(con: sqlite3.Connection) -> None:
 
     def loc_label(loc_id: str) -> str:
         return LOCATIONS[loc_id]["label"] if loc_id in LOCATIONS else "Unknown location"
-    
+
     def pretty_asset_label(row: pd.Series) -> str:
         status = str(row["status"]).capitalize()
         location = loc_label(str(row["location_id"]))
         return f'{row["asset_name"]} • {row["asset_type"]} • {location} • {status}'
 
-
-    asset_labels: dict[str, str] = {}
-    for _, r in assets_df.iterrows():
-        asset_labels[str(r["asset_id"])] = (
-            f'{r["asset_name"]} ({r["asset_type"]}) — {loc_label(str(r["location_id"]))} [{r["status"]}]'
-        )
+    def next_available_text(future_df: pd.DataFrame) -> str:
+        if future_df.empty:
+            return "Available now"
+        ends = pd.to_datetime(future_df["end_time"], errors="coerce").dropna()
+        if ends.empty:
+            return "See upcoming bookings"
+        next_free = ends.min()
+        return f"Next available after: {next_free.strftime('%Y-%m-%d %H:%M')}"
 
     st.subheader("Select asset")
-    
-    col1, col2 = st.columns(2)
-    type_filter = col1.multiselect(
-        "Filter by type",
-        options=sorted(assets_df["asset_type"].unique()),
-        default=sorted(assets_df["asset_type"].unique()),
-    )
-    
-    status_filter2 = col2.multiselect(
-        "Filter by status",
-        options=sorted(assets_df["status"].unique()),
-        default=sorted(assets_df["status"].unique()),
-    )
-    
-    filtered_assets = assets_df[
-        (assets_df["asset_type"].isin(type_filter)) &
-        (assets_df["status"].isin(status_filter2))
-    ].copy()
-    
-    asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in filtered_assets.iterrows()}
 
-    if filtered_assets.empty:
-        st.warning("No assets match your filters.")
-        return
-    
+    # No filters (type / availability) — show all assets
+    asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in assets_df.iterrows()}
+
     asset_id = st.selectbox(
         "Select asset",
         options=list(asset_rows.keys()),
         format_func=lambda aid: asset_rows[aid],
     )
 
-    selected = filtered_assets[filtered_assets["asset_id"] == asset_id].iloc[0]
-    st.write("**Location:**", loc_label(str(selected["location_id"])))
+    selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
 
-
-    status = str(selected["status"]).lower()
-    if status == "available":
-        st.success("Status: Available ✅")
-    elif status == "booked":
-        st.warning("Status: Booked ⛔")
-    else:
-        st.info(f"Status: {selected['status']}")
-
+    st.subheader("Selected asset")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Asset", str(selected["asset_name"]))
+    c2.metric("Type", str(selected["asset_type"]))
+    c3.metric("Status", str(selected["status"]).capitalize())
+    st.caption(f"Location: {loc_label(str(selected['location_id']))}")
 
     st.subheader("Upcoming bookings")
     future = fetch_future_bookings(con, asset_id)
+    st.info(next_available_text(future))
+
     if future.empty:
-        st.info("No upcoming bookings.")
+        st.caption("No upcoming bookings.")
     else:
         st.dataframe(future, hide_index=True, use_container_width=True)
 
-    if selected["status"] != "available":
+    if str(selected["status"]).lower() != "available":
         st.warning("This asset is currently not available for booking.")
         return
 
@@ -1017,19 +998,35 @@ def page_booking(con: sqlite3.Connection) -> None:
     st.subheader("Book this asset")
 
     with st.form("booking_form"):
-        user_name = st.text_input("Your name*",placeholder="e.g., Max Muster")
-        start_date = st.date_input("Start date*")
-        start_time = st.time_input("Start time*")
-        duration_hours = st.number_input("Duration (hours)*", min_value=1, max_value=12, value=1, step=1)
+        user_name = st.text_input("Your name*", placeholder="e.g., Max Muster").strip()
+
+        c1, c2 = st.columns(2)
+        start_date = c1.date_input("Start date*")
+        start_time = c2.time_input("Start time*")
+
+        duration_hours = st.number_input(
+            "Duration (hours)*",
+            min_value=1,
+            max_value=12,
+            value=1,
+            step=1,
+            help="Maximum booking duration is 12 hours.",
+        )
+
+        # Preview
+        start_dt_preview = APP_TZ.localize(datetime.combine(start_date, start_time))
+        end_dt_preview = start_dt_preview + timedelta(hours=float(duration_hours))
+        st.caption(
+            f"Booking window: {start_dt_preview.strftime('%Y-%m-%d %H:%M')} → {end_dt_preview.strftime('%H:%M')}"
+        )
+
         submit = st.form_submit_button("Confirm booking")
 
     if not submit:
         return
 
-    if not user_name.strip():
-        if start_date is None or start_time is None:
-            st.error("Start date and start time are required.")
-        st.error("Name is required.")
+    if not user_name:
+        st.error("Please enter your name.")
         return
 
     # Build timezone-aware datetimes (Zurich)
@@ -1052,7 +1049,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         """,
         (
             asset_id,
-            user_name.strip(),
+            user_name,
             start_dt.isoformat(timespec="seconds"),
             end_dt.isoformat(timespec="seconds"),
             now_zurich_str(),
@@ -1103,11 +1100,11 @@ def page_assets(con: sqlite3.Connection) -> None:
     assets_df["location_label"] = assets_df["location_id"].apply(
         lambda lid: LOCATIONS.get(str(lid), {}).get("label", "Unknown location")
     )
-    
+
     def pretty_asset_label(row: pd.Series) -> str:
         status = str(row["status"]).capitalize()
         return f'{row["asset_name"]} • {row["asset_type"]} • {row["location_label"]} • {status}'
-    
+
     asset_rows = {row["asset_id"]: pretty_asset_label(row) for _, row in assets_df.iterrows()}
 
     asset_id = st.selectbox(
@@ -1126,7 +1123,6 @@ def page_assets(con: sqlite3.Connection) -> None:
     c3.metric("Asset ID", str(asset["asset_id"]))
 
     st.write("**Location:**", str(asset["location_label"]))
-
 
     st.subheader("Move asset to another location")
     new_location_id = st.selectbox(
@@ -1249,7 +1245,6 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
         st.rerun()
 
 
-# ✅ Needed: otherwise "Overview Dashboard" would incorrectly open Overwrite Status
 def page_overview_dashboard(con: sqlite3.Connection) -> None:
     st.header("Overview Dashboard")
     st.info("Quick overview of issues and assets.")
@@ -1281,7 +1276,6 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
     st.subheader("Assets by status")
     if assets.empty:
         st.info("No assets yet.")
-
     else:
         assets_view = assets.copy()
         assets_view["location"] = assets_view["location_id"].apply(
@@ -1325,7 +1319,6 @@ def main() -> None:
 
     st.title("Reporting Tool @ HSG")
 
-    # Sidebar navigation with 3 sections (categories)
     st.sidebar.markdown("### Navigation")
 
     section = st.sidebar.radio(
@@ -1343,7 +1336,7 @@ def main() -> None:
             "Select page:",
             ["Booking", "Asset Tracking"],
         )
-    else:  # Overview
+    else:
         page = st.sidebar.radio(
             "Select page:",
             ["Overview Dashboard"],
