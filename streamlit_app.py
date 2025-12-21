@@ -954,6 +954,15 @@ def page_booking(con: sqlite3.Connection) -> None:
     asset_id = st.selectbox("Select asset", options=list(asset_labels.keys()), format_func=lambda x: asset_labels[x])
     selected = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
 
+    status = str(selected["status"]).lower()
+    if status == "available":
+        st.success("Status: Available ✅")
+    elif status == "booked":
+        st.warning("Status: Booked ⛔")
+    else:
+        st.info(f"Status: {selected['status']}")
+
+
     st.subheader("Upcoming bookings")
     future = fetch_future_bookings(con, asset_id)
     if future.empty:
