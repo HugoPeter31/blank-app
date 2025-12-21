@@ -722,8 +722,8 @@ def render_map_iframe() -> None:
 # ----------------------------
 def page_submission_form(con: sqlite3.Connection) -> None:
     st.header("Submission Form")
-    st.caption("Fields marked with * are mandatory.")
     st.info("Use this form to report facility-related issues. You will receive a confirmation email after submitting.")
+    st.caption("Fields marked with * are mandatory.")
 
     with st.form("issue_form", clear_on_submit=True):
         name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
