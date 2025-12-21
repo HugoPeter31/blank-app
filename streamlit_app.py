@@ -725,12 +725,9 @@ def page_submission_form(con: sqlite3.Connection) -> None:
     st.info("Please use this form to report facility-related issues on campus.")
 
     with st.form("issue_form", clear_on_submit=True):
-        name = st.text_input("Name*").strip()
-        hsg_email = st.text_input("HSG Email Address*").strip()
-        st.caption("Accepted emails: …@unisg.ch or …@student.unisg.ch")
-
-        room_number = st.text_input("Room Number*").strip()
-        st.caption("Room example: A 09-001")
+        name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
+        hsg_email = st.text_input("HSG Email Address*",placeholder="Accepted emails: …@unisg.ch or …@student.unisg.ch").strip()
+        room_number = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
 
         issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
         importance = st.selectbox("Importance*", IMPORTANCE_LEVELS)
