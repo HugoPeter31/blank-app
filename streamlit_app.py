@@ -738,7 +738,7 @@ Thank you for contacting us regarding your concern. We hereby confirm that we ha
 We will keep you informed about the progress and notify you once the matter has been resolved.
 
 Kind regards,
-Service Team
+HSG Service Team
 """
     return subject, body
 
@@ -751,7 +751,7 @@ def resolved_email_text(recipient_name: str) -> tuple[str, str]:
 We are pleased to inform you that the issue you reported via the Reporting Tool @ HSG has been resolved.
 
 Kind regards,
-Service Team
+HSG Service Team
 """
     return subject, body
 
