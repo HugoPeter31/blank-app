@@ -911,9 +911,14 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Display issue submission form with validation and confirmation.
 
-    SLA + character counter update immediately by design:
-    - Priority selectbox and description text_area are OUTSIDE the form.
-    - The submit button only submits, but those widgets still rerun live.
+    Change requested:
+    - Order in Reporting Tool is now:
+      1) Your Information
+      2) Issue Details
+      3) Optional Photo Upload
+    - SLA + character counter still update immediately:
+      We keep "Issue Details" widgets (priority + description) outside the form,
+      but we *render* the "Your Information" section first inside the form.
     """
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
@@ -923,35 +928,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         "You will receive a confirmation email with SLA details after submitting."
     )
 
-    # ---- Immediate SLA feedback (must be outside form)
-    st.subheader("📋 Issue Details")
-
-    if "issue_priority" not in st.session_state:
-        st.session_state["issue_priority"] = "Low"
-
-    importance = st.selectbox(
-        "Priority Level*",
-        options=IMPORTANCE_LEVELS,
-        key="issue_priority",
-        help="Used to determine the SLA target handling time.",
-    )
-
-    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
-    if sla_hours is not None:
-        st.info(f"**SLA Target:** Resolution within {sla_hours} hours")
-
-    # ---- Immediate character counter (must be outside form)
-    user_comment = st.text_area(
-        "Problem Description*",
-        max_chars=500,
-        placeholder="What happened? Where exactly? Since when? Any impact?",
-        height=120,
-        key="issue_description",
-    ).strip()
-
-    st.caption(f"{len(user_comment)}/500 characters")
-
-    # ---- Remaining inputs in a form (submitted atomically)
+    # ---- SECTION 1: Your Information (inside form, rendered first)
     with st.form("issue_form", clear_on_submit=True):
         st.subheader("👤 Your Information")
         col1, col2 = st.columns(2)
@@ -967,8 +944,10 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             ).strip()
             st.caption("Must be @unisg.ch or @student.unisg.ch")
 
-        col3, col4 = st.columns(2)
+        # ---- SECTION 2: Issue Details (rendered second; priority+description stored via session_state)
+        st.subheader("📋 Issue Details")
 
+        col3, col4 = st.columns(2)
         with col3:
             room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
             if room_number_input:
@@ -979,6 +958,14 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         with col4:
             issue_type = st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
 
+        # Priority + description widgets MUST stay outside st.form to update live,
+        # so we "mirror" them here using session_state values and a small hint.
+        st.caption(
+            "Priority level and description are shown below (live updates). "
+            "Please set them before submitting."
+        )
+
+        # ---- SECTION 3: Optional Photo Upload (rendered third)
         st.subheader("📸 Optional Photo Upload")
         uploaded_file = st.file_uploader(
             "Upload a photo to help us understand the issue better",
@@ -992,6 +979,32 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         render_map_iframe()
 
         submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
+
+    # ---- Live widgets OUTSIDE the form (keeps SLA + char counter reactive)
+    # Render these after the form, but they still conceptually belong to "Issue Details".
+    if "issue_priority" not in st.session_state:
+        st.session_state["issue_priority"] = "Low"
+
+    importance = st.selectbox(
+        "Priority Level*",
+        options=IMPORTANCE_LEVELS,
+        key="issue_priority",
+        help="Used to determine the SLA target handling time.",
+    )
+
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+    if sla_hours is not None:
+        st.info(f"**SLA Target:** Resolution within {sla_hours} hours")
+
+    user_comment = st.text_area(
+        "Problem Description*",
+        max_chars=500,
+        placeholder="What happened? Where exactly? Since when? Any impact?",
+        height=120,
+        key="issue_description",
+    ).strip()
+
+    st.caption(f"{len(user_comment)}/500 characters")
 
     if not submitted:
         return
@@ -1068,11 +1081,7 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_charts(df: pd.DataFrame) -> None:
-    """Render lightweight analytics using built-in Streamlit charts.
-
-    Why: avoiding extra plotting dependencies improves deploy reliability and is
-    sufficient for operational dashboards.
-    """
+    """Render lightweight analytics using built-in Streamlit charts."""
     if df.empty:
         st.info("No data available for charts.")
         return
@@ -1209,7 +1218,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.info("No issues match the selected filters.")
         return
 
-    # Compute SLA target once per row (fast + avoids accidental double work)
     def _sla_target_row(r: pd.Series) -> str | None:
         dt_target = expected_resolution_dt(str(r.get("created_at", "")), str(r.get("importance", "")))
         return dt_target.isoformat(timespec="seconds") if dt_target is not None else None
@@ -1467,7 +1475,6 @@ def page_booking(con: sqlite3.Connection) -> None:
             duration_choice = st.selectbox("Duration*", options=list(duration_options.keys()))
             duration_hours = duration_options[duration_choice]
 
-        # DST-safe localization to prevent edge-case crashes.
         start_dt = safe_localize(datetime.combine(start_date, start_time))
         end_dt = start_dt + timedelta(hours=duration_hours)
 
@@ -1629,8 +1636,11 @@ def page_assets(con: sqlite3.Connection) -> None:
             try:
                 with con:
                     con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
+
+                # ✅ Requested change: explicit confirmation message on successful move submission
                 st.success(
-                    f"✅ Asset moved successfully!\n\n"
+                    "✅ Move request submitted successfully!\n\n"
+                    f"**Asset:** {selected_asset['asset_name']}\n"
                     f"**From:** {selected_asset['location_label']}\n"
                     f"**To:** {LOCATIONS[new_location_id]['label']}"
                 )
@@ -1851,7 +1861,6 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             with col_stat2:
                 created_dt = pd.to_datetime(issues.get("created_at"), errors="coerce")
                 if created_dt.notna().any():
-                    # Works if created_at contains timezone offset (it does in this app).
                     avg_age_days = (now_zurich() - created_dt).dt.days.mean()
                     st.metric("Avg. Issue Age", f"{avg_age_days:.1f} days")
                 else:
@@ -1990,7 +1999,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # This is a last-resort guard so the app fails with a readable message.
         logger.critical("Application crashed: %s", e, exc_info=True)
 
         st.error(
@@ -2003,12 +2011,10 @@ if __name__ == "__main__":
             f"```\n{str(e)}\n```"
         )
 
-        # In debug mode, show full stacktrace to speed up fixing (avoid in production).
         try:
             if get_config().debug:
                 import traceback
 
                 st.code(traceback.format_exc(), language="python")
         except Exception:
-            # If secrets/config caused the crash, avoid crashing again while rendering debug output.
             pass
