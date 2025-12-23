@@ -1133,7 +1133,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         status_filter = st.multiselect(
             "Status",
             options=STATUS_LEVELS,
-            default=["Pending", "In Progress"],
+            default=STATUS_LEVELS,
             help="Select statuses to display",
         )
 
@@ -1670,7 +1670,7 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
     admin_status_filter = st.multiselect(
         "Show issues with status:",
         options=STATUS_LEVELS,
-        default=["Pending", "In Progress"],
+        default=STATUS_LEVELS,
     )
 
     filtered_df = df[df["status"].isin(admin_status_filter)]
