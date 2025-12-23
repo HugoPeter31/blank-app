@@ -7,17 +7,12 @@ from __future__ import annotations
 # Purpose: Facility issue reporting, asset booking, and tracking system
 # Developed by: Arthur Lavric & Fabio Patierno
 #
-# Key Features:
-# 1) Issue reporting form with email confirmation and SLA tracking
-# 2) Dashboard with filtering, analytics, and CSV export
-# 3) Admin panel with password protection and status management
-# 4) Asset booking system with room-asset linking
-# 5) Asset tracking with location-based management
-#
-# Security Notes:
-# - Admin access protected via Streamlit secrets (ADMIN_PASSWORD)
-# - Email functionality requires SMTP secrets configuration
-# - Parameterized SQL queries prevent SQL injection
+# Key Design Choices (why this is structured this way):
+# - Secrets are loaded inside the Streamlit app lifecycle (not at import time),
+#   so configuration errors show a clear UI message instead of a blank crash.
+# - All database writes use transactions (`with con:`) to keep updates atomic.
+# - Time handling uses a single timezone source to prevent subtle mismatches.
+# - Input normalization happens before validation so common user formats work.
 # ============================================================================
 
 # ============================================================================
@@ -35,7 +30,6 @@ import pandas as pd
 import pytz
 import smtplib
 import streamlit as st
-
 
 # ============================================================================
 # CONFIGURATION & CONSTANTS
@@ -66,6 +60,7 @@ SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
 
 # Validation patterns for user inputs
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
+# Accept both "A 09-001" and "A09-001"; normalization will standardize.
 ROOM_PATTERN = re.compile(r"^[A-Z]\s?\d{2}-\d{3}$")
 
 # Location mapping for asset tracking
@@ -79,7 +74,6 @@ LOCATIONS = {
 # Keeps long descriptions readable in tables while still allowing full access via detail view.
 DESCRIPTION_PREVIEW_CHARS = 90
 
-
 # ============================================================================
 # LOGGING CONFIGURATION
 # ============================================================================
@@ -90,15 +84,16 @@ if not logger.handlers:
 
 
 # ============================================================================
-# DATA MODEL
+# DATA MODELS
 # ============================================================================
 @dataclass(frozen=True)
 class Submission:
-    """Data model representing an issue submission.
+    """Represents a validated issue submission payload.
 
-    Frozen dataclasses help prevent accidental mutation after validation,
-    reducing subtle bugs during reruns and database insertion.
+    Frozen dataclasses prevent accidental mutation after validation, which helps
+    in Streamlit's rerun model (fewer state-related surprises).
     """
+
     name: str
     hsg_email: str
     issue_type: str
@@ -107,14 +102,32 @@ class Submission:
     user_comment: str
 
 
+@dataclass(frozen=True)
+class AppConfig:
+    """Centralizes secrets/config so app behavior is predictable and testable."""
+
+    smtp_server: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    from_email: str
+    admin_inbox: str
+    admin_password: str
+    debug: bool
+    assignees: list[str]
+    auto_weekly_report: bool
+    report_weekday: int
+    report_hour: int
+
+
 # ============================================================================
 # SECRETS MANAGEMENT (Streamlit Cloud Secrets)
 # ============================================================================
 def get_secret(key: str, default: str | None = None) -> str:
     """Safely retrieve a secret from Streamlit secrets configuration.
 
-    We fail fast for required secrets because partial configuration
-    leads to confusing runtime behavior (e.g., email failures).
+    We stop the app (with a visible error) for required secrets because partial
+    configuration creates confusing runtime behavior later.
     """
     if key in st.secrets:
         return str(st.secrets[key])
@@ -124,28 +137,44 @@ def get_secret(key: str, default: str | None = None) -> str:
     st.stop()
 
 
-# Email configuration
-SMTP_SERVER = get_secret("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(get_secret("SMTP_PORT", "587"))
-SMTP_USERNAME = get_secret("SMTP_USERNAME")
-SMTP_PASSWORD = get_secret("SMTP_PASSWORD")
-FROM_EMAIL = get_secret("FROM_EMAIL", SMTP_USERNAME)
-ADMIN_INBOX = get_secret("ADMIN_INBOX", FROM_EMAIL)
+@st.cache_resource
+def get_config() -> AppConfig:
+    """Load secrets once per session.
 
-# Admin security
-ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")
+    Why: loading secrets at import time can crash the app before Streamlit renders.
+    This way, misconfiguration is surfaced as a clean UI error.
+    """
+    smtp_server = get_secret("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(get_secret("SMTP_PORT", "587"))
+    smtp_username = get_secret("SMTP_USERNAME")
+    smtp_password = get_secret("SMTP_PASSWORD")
+    from_email = get_secret("FROM_EMAIL", smtp_username)
+    admin_inbox = get_secret("ADMIN_INBOX", from_email)
 
-# Debug mode - enables more detailed messages (never leak secrets)
-DEBUG = get_secret("DEBUG", "0") == "1"
+    admin_password = get_secret("ADMIN_PASSWORD")
+    debug = get_secret("DEBUG", "0") == "1"
 
-# Team assignment
-ASSIGNEES_RAW = get_secret("ASSIGNEES", "Facility Team")
-ASSIGNEES = [a.strip() for a in ASSIGNEES_RAW.split(",") if a.strip()]
+    assignees_raw = get_secret("ASSIGNEES", "Facility Team")
+    assignees = [a.strip() for a in assignees_raw.split(",") if a.strip()]
 
-# Automated reporting configuration
-AUTO_WEEKLY_REPORT = get_secret("AUTO_WEEKLY_REPORT", "0") == "1"
-REPORT_WEEKDAY = int(get_secret("REPORT_WEEKDAY", "0"))  # 0=Monday, 6=Sunday
-REPORT_HOUR = int(get_secret("REPORT_HOUR", "7"))        # 24h format
+    auto_weekly_report = get_secret("AUTO_WEEKLY_REPORT", "0") == "1"
+    report_weekday = int(get_secret("REPORT_WEEKDAY", "0"))  # 0=Monday, 6=Sunday
+    report_hour = int(get_secret("REPORT_HOUR", "7"))  # 24h format
+
+    return AppConfig(
+        smtp_server=smtp_server,
+        smtp_port=smtp_port,
+        smtp_username=smtp_username,
+        smtp_password=smtp_password,
+        from_email=from_email,
+        admin_inbox=admin_inbox,
+        admin_password=admin_password,
+        debug=debug,
+        assignees=assignees,
+        auto_weekly_report=auto_weekly_report,
+        report_weekday=report_weekday,
+        report_hour=report_hour,
+    )
 
 
 # ============================================================================
@@ -170,6 +199,22 @@ def iso_to_dt(value: str) -> datetime | None:
         return None
 
 
+def safe_localize(dt_naive: datetime) -> datetime:
+    """Localize a naive datetime into APP_TZ safely.
+
+    DST transitions can create ambiguous or non-existent local times.
+    We choose deterministic fallbacks to avoid runtime crashes.
+    """
+    try:
+        return APP_TZ.localize(dt_naive, is_dst=None)
+    except pytz.AmbiguousTimeError:
+        # Prefer standard time to keep ordering stable.
+        return APP_TZ.localize(dt_naive, is_dst=False)
+    except pytz.NonExistentTimeError:
+        # Push forward by 1 hour if time doesn't exist (DST spring forward).
+        return APP_TZ.localize(dt_naive + timedelta(hours=1), is_dst=True)
+
+
 def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
     """Calculate expected resolution time based on SLA."""
     created_dt = iso_to_dt(created_at_iso)
@@ -188,13 +233,8 @@ def is_room_location(location_id: str) -> bool:
 # VALIDATION FUNCTIONS
 # ============================================================================
 def valid_email(hsg_email: str) -> bool:
-    """Validate HSG email address format."""
+    """Validate email address format."""
     return bool(EMAIL_PATTERN.fullmatch(hsg_email.strip()))
-
-
-def valid_room_number(room_number: str) -> bool:
-    """Validate HSG room number format (e.g., 'A 09-001')."""
-    return bool(ROOM_PATTERN.fullmatch(room_number.strip()))
 
 
 def normalize_room(room_number: str) -> str:
@@ -208,6 +248,11 @@ def normalize_room(room_number: str) -> str:
     return raw
 
 
+def valid_room_number(room_number: str) -> bool:
+    """Validate room number format after normalization."""
+    return bool(ROOM_PATTERN.fullmatch(normalize_room(room_number)))
+
+
 def validate_submission_input(sub: Submission) -> list[str]:
     """Validate all inputs for issue submission."""
     errors: list[str] = []
@@ -216,10 +261,11 @@ def validate_submission_input(sub: Submission) -> list[str]:
         errors.append("Name is required.")
 
     if not sub.hsg_email.strip():
-        errors.append("HSG email address is required.")
+        errors.append("Email address is required.")
     elif not valid_email(sub.hsg_email):
         errors.append("Invalid email address. Use …@unisg.ch or …@student.unisg.ch.")
 
+    # Validate normalized room to accept common user input formats.
     if not sub.room_number.strip():
         errors.append("Room number is required.")
     elif not valid_room_number(sub.room_number):
@@ -242,7 +288,7 @@ def validate_admin_email(email: str) -> list[str]:
     if not email.strip():
         return ["Email address is required."]
     if not valid_email(email):
-        return ["Please provide a valid HSG email address (…@unisg.ch or …@student.unisg.ch)."]
+        return ["Please provide a valid email address (…@unisg.ch or …@student.unisg.ch)."]
     return []
 
 
@@ -261,120 +307,112 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db(con: sqlite3.Connection) -> None:
     """Initialize core database tables for issue reporting (idempotent)."""
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            hsg_email TEXT NOT NULL,
-            issue_type TEXT NOT NULL,
-            room_number TEXT NOT NULL,
-            importance TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'Pending',
-            user_comment TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            assigned_to TEXT,
-            resolved_at TEXT
-        )
-    """)
+    with con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                hsg_email TEXT NOT NULL,
+                issue_type TEXT NOT NULL,
+                room_number TEXT NOT NULL,
+                importance TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Pending',
+                user_comment TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                assigned_to TEXT,
+                resolved_at TEXT
+            )
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS status_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            submission_id INTEGER NOT NULL,
-            old_status TEXT NOT NULL,
-            new_status TEXT NOT NULL,
-            changed_at TEXT NOT NULL,
-            FOREIGN KEY (submission_id) REFERENCES submissions(id)
-        )
-    """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS status_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER NOT NULL,
+                old_status TEXT NOT NULL,
+                new_status TEXT NOT NULL,
+                changed_at TEXT NOT NULL,
+                FOREIGN KEY (submission_id) REFERENCES submissions(id)
+            )
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS report_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_type TEXT NOT NULL,
-            sent_at TEXT NOT NULL
-        )
-    """)
-
-    con.commit()
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS report_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_type TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            )
+        """)
 
 
 def init_booking_table(con: sqlite3.Connection) -> None:
     """Initialize booking system tables (idempotent)."""
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS bookings (
-            booking_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset_id TEXT NOT NULL,
-            user_name TEXT NOT NULL,
-            start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-    con.commit()
+    with con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS bookings (
+                booking_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
 
 
 def init_assets_table(con: sqlite3.Connection) -> None:
     """Initialize assets table for both booking and tracking (idempotent)."""
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS assets (
-            asset_id TEXT PRIMARY KEY,
-            asset_name TEXT NOT NULL,
-            asset_type TEXT NOT NULL,
-            location_id TEXT NOT NULL,
-            status TEXT NOT NULL
-        )
-    """)
-    con.commit()
+    with con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS assets (
+                asset_id TEXT PRIMARY KEY,
+                asset_name TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                location_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+        """)
 
 
 def migrate_db(con: sqlite3.Connection) -> None:
-    """Apply schema migrations for backward compatibility.
-
-    This avoids breaking older deployments where DB was created with an earlier schema.
-    """
+    """Apply schema migrations for backward compatibility."""
     cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
+    now_iso = now_zurich_str()
 
-    if "created_at" not in cols:
-        con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
-        now_iso = now_zurich_str()
-        con.execute("UPDATE submissions SET created_at = ? WHERE created_at IS NULL", (now_iso,))
-        con.execute("UPDATE submissions SET updated_at = ? WHERE updated_at IS NULL", (now_iso,))
+    with con:
+        if "created_at" not in cols:
+            con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
+            con.execute("UPDATE submissions SET created_at = ? WHERE created_at IS NULL", (now_iso,))
 
-    if "updated_at" not in cols:
-        con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
-        now_iso = now_zurich_str()
-        con.execute("UPDATE submissions SET created_at = ? WHERE created_at IS NULL", (now_iso,))
-        con.execute("UPDATE submissions SET updated_at = ? WHERE updated_at IS NULL", (now_iso,))
+        if "updated_at" not in cols:
+            con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
+            con.execute("UPDATE submissions SET updated_at = ? WHERE updated_at IS NULL", (now_iso,))
 
-    if "assigned_to" not in cols:
-        con.execute("ALTER TABLE submissions ADD COLUMN assigned_to TEXT")
+        if "assigned_to" not in cols:
+            con.execute("ALTER TABLE submissions ADD COLUMN assigned_to TEXT")
 
-    if "resolved_at" not in cols:
-        con.execute("ALTER TABLE submissions ADD COLUMN resolved_at TEXT")
+        if "resolved_at" not in cols:
+            con.execute("ALTER TABLE submissions ADD COLUMN resolved_at TEXT")
 
-    # Ensure audit tables exist (safe no-op if already there)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS status_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            submission_id INTEGER NOT NULL,
-            old_status TEXT NOT NULL,
-            new_status TEXT NOT NULL,
-            changed_at TEXT NOT NULL,
-            FOREIGN KEY (submission_id) REFERENCES submissions(id)
-        )
-    """)
+        # Ensure audit tables exist (safe no-op if already there)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS status_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER NOT NULL,
+                old_status TEXT NOT NULL,
+                new_status TEXT NOT NULL,
+                changed_at TEXT NOT NULL,
+                FOREIGN KEY (submission_id) REFERENCES submissions(id)
+            )
+        """)
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS report_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_type TEXT NOT NULL,
-            sent_at TEXT NOT NULL
-        )
-    """)
-
-    con.commit()
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS report_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_type TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            )
+        """)
 
 
 def seed_assets(con: sqlite3.Connection) -> None:
@@ -388,16 +426,16 @@ def seed_assets(con: sqlite3.Connection) -> None:
         ("CHAIR_H2", "Hallway Chair 2", "Chair", "H_A_09001", "available"),
     ]
 
-    for asset in assets:
-        con.execute(
-            """
-            INSERT OR IGNORE INTO assets
-            (asset_id, asset_name, asset_type, location_id, status)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            asset,
-        )
-    con.commit()
+    with con:
+        for asset in assets:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO assets
+                (asset_id, asset_name, asset_type, location_id, status)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                asset,
+            )
 
 
 def fetch_submissions(con: sqlite3.Connection) -> pd.DataFrame:
@@ -459,11 +497,11 @@ def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list
 
 def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
     """Log that a report has been sent to prevent duplicates."""
-    con.execute(
-        "INSERT INTO report_log (report_type, sent_at) VALUES (?, ?)",
-        (report_type, now_zurich_str()),
-    )
-    con.commit()
+    with con:
+        con.execute(
+            "INSERT INTO report_log (report_type, sent_at) VALUES (?, ?)",
+            (report_type, now_zurich_str()),
+        )
 
 
 # ============================================================================
@@ -477,8 +515,8 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
     """
     now_iso = now_zurich().isoformat(timespec="seconds")
 
-    con.execute("UPDATE assets SET status = 'available'")
-    con.commit()
+    with con:
+        con.execute("UPDATE assets SET status = 'available'")
 
     active = pd.read_sql(
         """
@@ -491,36 +529,28 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
         params=(now_iso, now_iso),
     )
 
-    for _, row in active.iterrows():
-        asset_id = row["asset_id"]
-        asset_type = row["asset_type"]
-        location_id = row["location_id"]
+    with con:
+        for _, row in active.iterrows():
+            asset_id = row["asset_id"]
+            asset_type = row["asset_type"]
+            location_id = row["location_id"]
 
-        con.execute(
-            "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
-            (asset_id,),
-        )
+            con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (asset_id,))
 
-        if asset_type == "Room" and is_room_location(location_id):
-            for aid in fetch_assets_in_room(con, location_id):
-                con.execute(
-                    "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
-                    (aid,),
-                )
-
-    con.commit()
+            if asset_type == "Room" and is_room_location(location_id):
+                for aid in fetch_assets_in_room(con, location_id):
+                    con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (aid,))
 
 
 def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datetime, end_time: datetime) -> bool:
     """Check if an asset is available during a specified time period."""
-    query = """
+    count = con.execute(
+        """
         SELECT COUNT(*) FROM bookings
         WHERE asset_id = ?
           AND start_time < ?
           AND end_time > ?
-    """
-    count = con.execute(
-        query,
+        """,
         (asset_id, end_time.isoformat(timespec="seconds"), start_time.isoformat(timespec="seconds")),
     ).fetchone()[0]
     return count == 0
@@ -635,53 +665,60 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
 # ============================================================================
 # EMAIL FUNCTIONS
 # ============================================================================
-def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
+def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> tuple[bool, str]:
     """Send email with proper error handling.
 
     We return a user-friendly message so the UI can stay helpful without leaking
-    sensitive SMTP details unless DEBUG is explicitly enabled.
+    sensitive SMTP details unless debug is explicitly enabled.
     """
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = FROM_EMAIL
+    msg["From"] = config.from_email
     msg["To"] = to_email
     msg.set_content(body)
 
-    recipients = [to_email] + ([ADMIN_INBOX] if ADMIN_INBOX else [])
+    recipients = [to_email]
+    if config.admin_inbox:
+        recipients.append(config.admin_inbox)
 
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
+        with smtplib.SMTP(config.smtp_server, config.smtp_port, timeout=10) as smtp:
+            # `ehlo()` improves compatibility with certain SMTP servers and helps TLS negotiation.
+            smtp.ehlo()
             smtp.starttls()
-            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+            smtp.ehlo()
+            smtp.login(config.smtp_username, config.smtp_password)
             smtp.send_message(msg, to_addrs=recipients)
         return True, "Email sent successfully."
     except Exception as exc:
         logger.exception("Email sending failed")
-        if DEBUG:
+        if config.debug:
             return False, f"Email could not be sent: {exc}"
         return False, "Email could not be sent due to a technical issue."
 
 
-def send_admin_report_email(subject: str, body: str) -> tuple[bool, str]:
+def send_admin_report_email(subject: str, body: str, *, config: AppConfig) -> tuple[bool, str]:
     """Send report email to admin inbox only."""
-    if not ADMIN_INBOX:
+    if not config.admin_inbox:
         return False, "ADMIN_INBOX is not configured."
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = FROM_EMAIL
-    msg["To"] = ADMIN_INBOX
+    msg["From"] = config.from_email
+    msg["To"] = config.admin_inbox
     msg.set_content(body)
 
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
+        with smtplib.SMTP(config.smtp_server, config.smtp_port, timeout=10) as smtp:
+            smtp.ehlo()
             smtp.starttls()
-            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-            smtp.send_message(msg, to_addrs=[ADMIN_INBOX])
+            smtp.ehlo()
+            smtp.login(config.smtp_username, config.smtp_password)
+            smtp.send_message(msg, to_addrs=[config.admin_inbox])
         return True, "Report email sent successfully."
     except Exception as exc:
         logger.exception("Report email sending failed")
-        if DEBUG:
+        if config.debug:
             return False, f"Report email could not be sent: {exc}"
         return False, "Report email could not be sent due to a technical issue."
 
@@ -760,13 +797,13 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
     return subject, body
 
 
-def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
+def send_weekly_report_if_due(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Check if weekly report is due and send it."""
-    if not AUTO_WEEKLY_REPORT:
+    if not config.auto_weekly_report:
         return
 
     now_dt = now_zurich()
-    if now_dt.weekday() != REPORT_WEEKDAY or now_dt.hour != REPORT_HOUR:
+    if now_dt.weekday() != config.report_weekday or now_dt.hour != config.report_hour:
         return
 
     log_df = fetch_report_log(con, "weekly")
@@ -777,7 +814,7 @@ def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
 
     df_all = fetch_submissions(con)
     subject, body = build_weekly_report(df_all)
-    ok, _ = send_admin_report_email(subject, body)
+    ok, _ = send_admin_report_email(subject, body, config=config)
     if ok:
         mark_report_sent(con, "weekly")
 
@@ -851,7 +888,7 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
 def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str:
     """Create a stable preview for long text fields in tables.
 
-    Tables should support scanning quickly; full details are shown in the detail panel.
+    Tables should support quick scanning; full details are shown in the detail panel.
     """
     text = (value or "").strip()
     if len(text) <= max_chars:
@@ -862,7 +899,7 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 # ============================================================================
 # APPLICATION PAGES
 # ============================================================================
-def page_submission_form(con: sqlite3.Connection) -> None:
+def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Display issue submission form with validation and confirmation."""
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory. All times are Europe/Zurich.")
@@ -881,7 +918,7 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
         with col2:
             hsg_email = st.text_input(
-                "HSG Email Address*",
+                "Email Address*",
                 placeholder="firstname.lastname@student.unisg.ch",
             ).strip()
             st.caption("Must be @unisg.ch or @student.unisg.ch")
@@ -957,12 +994,12 @@ def page_submission_form(con: sqlite3.Connection) -> None:
         return
 
     subject, body = confirmation_email_text(sub.name.strip(), sub.importance)
-    ok, msg = send_email(sub.hsg_email, subject, body)
+    ok, msg = send_email(sub.hsg_email, subject, body, config=config)
 
     st.success("✅ Issue reported successfully!")
-    st.balloons()
-
-    if not ok:
+    if ok:
+        st.balloons()
+    else:
         st.warning(f"Note: {msg}")
 
 
@@ -977,7 +1014,7 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
         columns={
             "id": "ID",
             "name": "Reporter Name",
-            "hsg_email": "HSG Email",
+            "hsg_email": "Email",
             "issue_type": "Issue Type",
             "room_number": "Room Number",
             "importance": "Priority",
@@ -1010,8 +1047,8 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
 def render_charts(df: pd.DataFrame) -> None:
     """Render lightweight analytics using built-in Streamlit charts.
 
-    Why: avoiding extra plotting dependencies improves deploy reliability
-    (especially on Streamlit Cloud) and is sufficient for operational dashboards.
+    Why: avoiding extra plotting dependencies improves deploy reliability and is
+    sufficient for operational dashboards.
     """
     if df.empty:
         st.info("No data available for charts.")
@@ -1079,7 +1116,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.info("No issues have been submitted yet.")
         return
 
-    # ---- Filters (improved usability) ----
     st.subheader("🔍 Filter Options")
     col_filter1, col_filter2, col_filter3 = st.columns([1, 1, 1])
 
@@ -1125,7 +1161,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         date_range_choice = st.selectbox(
             "Date range (by submitted date)",
             options=list(date_range_label_to_days.keys()),
-            index=1,  # sensible default: last 30 days
+            index=1,
         )
 
     filtered_df = df[
@@ -1137,19 +1173,19 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     if open_only:
         filtered_df = filtered_df[filtered_df["status"] != "Resolved"].copy()
 
-    # Date range filter (kept robust: invalid dates are excluded when a range is applied)
     days = date_range_label_to_days[date_range_choice]
     if days is not None:
         cutoff = now_zurich() - timedelta(days=int(days))
         filtered_df["created_at_dt"] = pd.to_datetime(filtered_df.get("created_at"), errors="coerce")
-        filtered_df = filtered_df[filtered_df["created_at_dt"].notna() & (filtered_df["created_at_dt"] >= cutoff)].copy()
+        filtered_df = filtered_df[
+            filtered_df["created_at_dt"].notna() & (filtered_df["created_at_dt"] >= cutoff)
+        ].copy()
         filtered_df = filtered_df.drop(columns=["created_at_dt"], errors="ignore")
 
     if filtered_df.empty:
         st.info("No issues match the selected filters.")
         return
 
-    # SLA target calculation (kept as-is; requested UI improvement excludes SLA status indicator)
     filtered_df["expected_resolved_at"] = filtered_df.apply(
         lambda r: (
             expected_resolution_dt(str(r["created_at"]), str(r["importance"])).isoformat(timespec="seconds")
@@ -1159,7 +1195,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         axis=1,
     )
 
-    # Avg resolution (unchanged logic, safer parsing)
     resolved_df = filtered_df[filtered_df["status"] == "Resolved"].copy()
     if not resolved_df.empty and "created_at" in resolved_df.columns and "resolved_at" in resolved_df.columns:
         resolved_df["created_at_dt"] = pd.to_datetime(resolved_df["created_at"], errors="coerce")
@@ -1172,10 +1207,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
             avg_resolution = resolved_df["resolution_hours"].mean()
             st.metric("Average Resolution Time", f"{avg_resolution:.1f} hours")
 
-    # ---- Quick detail view (improves usability without cluttering the table) ----
     st.subheader("🧾 Quick Issue Details")
     issue_ids = filtered_df["id"].astype(int).tolist()
-    default_issue_id = issue_ids[0]
     selected_issue_id = st.selectbox(
         "Select an issue to view full details:",
         options=issue_ids,
@@ -1202,12 +1235,9 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.write("**Description:**")
         st.write(selected_row.get("user_comment", ""))
 
-    # ---- Table ----
     st.subheader(f"📊 Results ({len(filtered_df)} issues)")
-
     display_df = build_display_table(filtered_df)
 
-    # Column config improves scan-ability and prevents long text from breaking layout.
     column_config = {
         "ID": st.column_config.NumberColumn("ID", help="Unique issue identifier"),
         "Submitted": st.column_config.DatetimeColumn("Submitted", help="When the issue was submitted"),
@@ -1229,7 +1259,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         column_config=column_config,
     )
 
-    # ---- Export ----
     st.subheader("💾 Export")
     col_export1, col_export2 = st.columns(2)
 
@@ -1247,7 +1276,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         if st.button("Refresh", use_container_width=True):
             st.rerun()
 
-    # ---- Charts ----
     st.subheader("📈 Visualizations")
     render_charts(filtered_df)
 
@@ -1418,10 +1446,10 @@ def page_booking(con: sqlite3.Connection) -> None:
             duration_choice = st.selectbox("Duration*", options=list(duration_options.keys()))
             duration_hours = duration_options[duration_choice]
 
-        start_dt = APP_TZ.localize(datetime.combine(start_date, start_time))
+        # DST-safe localization to prevent edge-case crashes.
+        start_dt = safe_localize(datetime.combine(start_date, start_time))
         end_dt = start_dt + timedelta(hours=duration_hours)
 
-        # Micro-UX: warn early if user selected a past time today (reduces submit-fail loops).
         if start_dt < now_zurich():
             st.warning("Selected start time is in the past. Please choose a later time.")
 
@@ -1460,20 +1488,20 @@ def page_booking(con: sqlite3.Connection) -> None:
         return
 
     try:
-        con.execute(
-            """
-            INSERT INTO bookings (asset_id, user_name, start_time, end_time, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                asset_id,
-                user_name,
-                start_dt.isoformat(timespec="seconds"),
-                end_dt.isoformat(timespec="seconds"),
-                now_zurich_str(),
-            ),
-        )
-        con.commit()
+        with con:
+            con.execute(
+                """
+                INSERT INTO bookings (asset_id, user_name, start_time, end_time, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    user_name,
+                    start_dt.isoformat(timespec="seconds"),
+                    end_dt.isoformat(timespec="seconds"),
+                    now_zurich_str(),
+                ),
+            )
 
         sync_asset_statuses_from_bookings(con)
 
@@ -1578,8 +1606,8 @@ def page_assets(con: sqlite3.Connection) -> None:
             st.warning("Asset is already at this location.")
         else:
             try:
-                con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
-                con.commit()
+                with con:
+                    con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
                 st.success(
                     f"✅ Asset moved successfully!\n\n"
                     f"**From:** {selected_asset['location_label']}\n"
@@ -1591,12 +1619,12 @@ def page_assets(con: sqlite3.Connection) -> None:
                 logger.error("Asset movement error: %s", e)
 
 
-def page_overwrite_status(con: sqlite3.Connection) -> None:
+def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Admin interface for managing issue statuses and assignments (password protected)."""
     st.header("🔧 Admin Panel - Issue Management")
 
     entered_password = st.text_input("Enter Admin Password", type="password")
-    if entered_password != ADMIN_PASSWORD:
+    if entered_password != config.admin_password:
         st.info("🔐 Please enter the admin password to continue.")
         return
 
@@ -1608,7 +1636,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
             try:
                 df_all = fetch_submissions(con)
                 subject, body = build_weekly_report(df_all)
-                ok, msg = send_admin_report_email(subject, body)
+                ok, msg = send_admin_report_email(subject, body, config=config)
                 if ok:
                     mark_report_sent(con, "weekly_manual")
                     st.success("Weekly report sent successfully!")
@@ -1679,12 +1707,11 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 
     with st.form("admin_update_form"):
         current_assignee = str(row.get("assigned_to", "") or "")
+        assignee_options = ["(Unassigned)"] + config.assignees
         assigned_to = st.selectbox(
             "Assign to:",
-            options=["(Unassigned)"] + ASSIGNEES,
-            index=(["(Unassigned)"] + ASSIGNEES).index(current_assignee)
-            if current_assignee in (["(Unassigned)"] + ASSIGNEES)
-            else 0,
+            options=assignee_options,
+            index=assignee_options.index(current_assignee) if current_assignee in assignee_options else 0,
         )
         assigned_to_value = None if assigned_to == "(Unassigned)" else assigned_to
 
@@ -1726,7 +1753,7 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
                 show_errors(email_errors)
             else:
                 subject, body = resolved_email_text(str(row["name"]).strip() or "there")
-                ok, msg = send_email(str(row["hsg_email"]).strip(), subject, body)
+                ok, msg = send_email(str(row["hsg_email"]).strip(), subject, body, config=config)
                 if ok:
                     st.success("✓ Resolution notification sent to reporter.")
                 else:
@@ -1853,6 +1880,8 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
+    config = get_config()
+
     show_logo()
     st.sidebar.markdown("### 🧭 Navigation")
 
@@ -1898,7 +1927,7 @@ def main() -> None:
         init_assets_table(con)
         seed_assets(con)
         sync_asset_statuses_from_bookings(con)
-        send_weekly_report_if_due(con)
+        send_weekly_report_if_due(con, config=config)
     except Exception as e:
         st.error(f"❌ Database initialization failed: {e}")
         logger.critical("Database initialization error: %s", e)
@@ -1908,12 +1937,12 @@ def main() -> None:
     st.caption("Facility issue reporting, booking, and tracking.")
 
     page_functions = {
-        "Submission Form": lambda: page_submission_form(con),
+        "Submission Form": lambda: page_submission_form(con, config=config),
         "Submitted Issues": lambda: page_submitted_issues(con),
         "Booking": lambda: page_booking(con),
         "Asset Tracking": lambda: page_assets(con),
         "Overview Dashboard": lambda: page_overview_dashboard(con),
-        "Overwrite Status": lambda: page_overwrite_status(con),
+        "Overwrite Status": lambda: page_overwrite_status(con, config=config),
     }
 
     if current_page in page_functions:
@@ -1933,6 +1962,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        # This is a last-resort guard so the app fails with a readable message.
         logger.critical("Application crashed: %s", e, exc_info=True)
 
         st.error(
@@ -1945,6 +1975,8 @@ if __name__ == "__main__":
             f"```\n{str(e)}\n```"
         )
 
-        if DEBUG:
+        # In debug mode, show full stacktrace to speed up fixing (avoid in production).
+        if get_config().debug:
             import traceback
+
             st.code(traceback.format_exc(), language="python")
