@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from typing import Iterable
+import plotly.graph_objects as go
+
 
 import pandas as pd
 import pytz
@@ -1396,11 +1398,6 @@ def render_charts(df: pd.DataFrame) -> None:
                 )
             ]
         )
-            # Plotly-friendly palette (stable + avoids matplotlib dependency)
-        palette = [
-            "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
-            "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"
-        ]
 
         fig.update_layout(
             **base_layout,
