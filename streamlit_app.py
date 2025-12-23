@@ -949,6 +949,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             height=120,
         ).strip()
         st.caption(f"Character count: {len(user_comment)}/500")
+        user_comment = (user_comment_raw or "").strip()
 
         st.subheader("📸 Optional Photo Upload")
         uploaded_file = st.file_uploader(
