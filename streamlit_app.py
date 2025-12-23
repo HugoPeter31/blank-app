@@ -1101,7 +1101,6 @@ def render_charts(df: pd.DataFrame) -> None:
 def page_submitted_issues(con: sqlite3.Connection) -> None:
     """Display submitted issues with filtering, quick-detail view, and analytics."""
     st.header("📋 Submitted Issues Dashboard")
-    st.caption("All times are Europe/Zurich.")
 
     try:
         df = fetch_submissions(con)
@@ -1301,7 +1300,6 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 def page_booking(con: sqlite3.Connection) -> None:
     """Display asset booking interface with availability checking."""
     st.header("📅 Book an Asset")
-    st.caption("All times are Europe/Zurich.")
 
     try:
         sync_asset_statuses_from_bookings(con)
