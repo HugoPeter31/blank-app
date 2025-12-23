@@ -1883,7 +1883,7 @@ def main() -> None:
     config = get_config()
 
     show_logo()
-    st.sidebar.markdown("### 🧭 Navigation")
+    st.sidebar.markdown("### Navigation")
 
     section = st.sidebar.radio(
         "Select section:",
@@ -1951,7 +1951,7 @@ def main() -> None:
         st.error(f"Page '{current_page}' not found.")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"© {datetime.now().year}")
+    st.sidebar.caption(f"© {datetime.now().year} University of St.Gallen")
     st.sidebar.caption(f"Last updated: {now_zurich().strftime('%Y-%m-%d %H:%M')}")
 
 
