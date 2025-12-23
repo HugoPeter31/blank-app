@@ -906,16 +906,19 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 # APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Display issue submission page (exact order as requested)."""
+    """Submission page with the requested order, but compact + user-friendly.
+
+    UX intent (why):
+    - Only 3 section headers to reduce visual clutter.
+    - Priority + description live-update, but are part of "Issue Details" (no extra headers).
+    - SLA + char counter shown as one concise helper line.
+    - Map stays in the required order but is collapsed by default.
+    """
+
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
 
-    st.info(
-        "Use this form to report facility-related issues. "
-        "You will receive a confirmation email with SLA details after submitting."
-    )
-
-    # Ensure stable defaults (prevents KeyErrors on first render)
+    # Stable defaults (prevents KeyErrors on first render; keeps reruns predictable)
     st.session_state.setdefault("issue_name", "")
     st.session_state.setdefault("issue_email", "")
     st.session_state.setdefault("issue_room", "")
@@ -925,32 +928,33 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
     # 1) Your information
     st.subheader("👤 Your Information")
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
-    with col2:
+    with c2:
         st.text_input(
             "Email Address*",
             placeholder="firstname.lastname@student.unisg.ch",
             key="issue_email",
+            help="Must be @unisg.ch or @student.unisg.ch",
         )
-        st.caption("Must be @unisg.ch or @student.unisg.ch")
 
-    # 2) Issue detail
+    # 2) Issue details (includes: room, type, priority, description)
     st.subheader("📋 Issue Details")
-    col3, col4 = st.columns(2)
-    with col3:
-        room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
-        if room_number_input:
-            normalized = normalize_room(room_number_input)
-            if normalized != room_number_input:
-                st.caption(f"Will be saved as: **{normalized}**")
 
-    with col4:
+    c3, c4 = st.columns(2)
+    with c3:
+        room_raw = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
+        if room_raw:
+            normalized = normalize_room(room_raw)
+            if normalized != room_raw:
+                # Compact hint; avoids taking much vertical space.
+                st.caption(f"Saved as: **{normalized}**")
+
+    with c4:
         st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
 
-    # 3) Priority level (live SLA)
-    st.subheader("🚦 Priority Level")
+    # Priority (live SLA)
     st.selectbox(
         "Priority Level*",
         options=IMPORTANCE_LEVELS,
@@ -958,33 +962,32 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         help="Used to determine the SLA target handling time.",
     )
 
-    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
-    if sla_hours is not None:
-        st.info(f"**SLA Target:** Resolution within {sla_hours} hours")
-
-    # 4) Problem description (live char counter)
-    st.subheader("🧾 Problem Description")
+    # Description (live char counter)
     desc = st.text_area(
         "Problem Description*",
         max_chars=500,
         placeholder="What happened? Where exactly? Since when? Any impact?",
-        height=120,
+        height=110,
         key="issue_description",
     ).strip()
-    st.caption(f"{len(desc)}/500 characters")
 
-    # 5) Optional photo upload
-    st.subheader("📸 Optional Photo Upload")
+    # One compact helper line (instead of multiple info + captions)
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
+    sla_part = f"SLA: {sla_hours}h" if sla_hours is not None else "SLA: n/a"
+    st.caption(f"{sla_part} • {len(desc)}/500 characters")
+
+    # 5) Upload photo
+    st.subheader("📸 Upload Photo")
     uploaded_file = st.file_uploader(
-        "Upload a photo to help us understand the issue better",
+        "Optional: add a photo (jpg / png)",
         type=["jpg", "jpeg", "png"],
-        help="Tip: avoid personal data in the photo where possible.",
+        help="Avoid personal data in the photo where possible.",
         key="issue_photo",
     )
     if uploaded_file is not None:
-        st.image(uploaded_file, caption="Uploaded photo preview", use_container_width=True)
+        st.image(uploaded_file, caption="Preview", use_container_width=True)
 
-    # 6) Map
+    # 6) Map (still in correct order; collapsed by default inside expander)
     render_map_iframe()
 
     # 7) Submit button (last)
@@ -1009,7 +1012,8 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     try:
         insert_submission(con, sub)
     except Exception as e:
-        st.error(f"Database error: {e}")
+        # Keep user-facing messaging short; log the detail for debugging.
+        st.error("Database error while saving your report. Please try again.")
         logger.error("Failed to insert submission: %s", e)
         return
 
@@ -1022,10 +1026,17 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     else:
         st.warning(f"Note: {msg}")
 
-    # Clear user inputs after a successful submit (keeps reruns clean and avoids double submissions).
-    for k in ["issue_name", "issue_email", "issue_room", "issue_type", "issue_priority", "issue_description", "issue_photo"]:
-        if k in st.session_state:
-            del st.session_state[k]
+    # Clear inputs after success to prevent accidental resubmission on rerun.
+    for k in [
+        "issue_name",
+        "issue_email",
+        "issue_room",
+        "issue_type",
+        "issue_priority",
+        "issue_description",
+        "issue_photo",
+    ]:
+        st.session_state.pop(k, None)
 
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
