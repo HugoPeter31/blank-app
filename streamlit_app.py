@@ -80,46 +80,18 @@ ROOM_PATTERN = re.compile(r"^[A-Z]\s?\d{2}-\d{3}$")           # Standard HSG roo
 # Location mapping for asset tracking
 # In production, this could be replaced with a database table or API integration
 LOCATIONS = {
-    "R_A_09001": {"label": "Room A 09-001", "x": 10, "y": 20, "floor": "09", "building": "A", "type": "room"},
-    "H_A_09001": {"label": "Hallway near Room A 09-001", "x": 15, "y": 25, "floor": "09", "building": "A", "type": "hallway"},
-    "R_B_10012": {"label": "Room B 10-012", "x": 40, "y": 60, "floor": "10", "building": "B", "type": "room"},
-    "H_B_10012": {"label": "Hallway near Room B 10-012", "x": 45, "y": 65, "floor": "10", "building": "B", "type": "hallway"},
-    "R_C_11023": {"label": "Room C 11-023", "x": 70, "y": 80, "floor": "11", "building": "C", "type": "room"},
-    "H_C_11000": {"label": "Hallway C 11-000", "x": 75, "y": 85, "floor": "11", "building": "C", "type": "hallway"},
-    "LIB_001": {"label": "Main Library", "x": 50, "y": 50, "floor": "00", "building": "Library", "type": "common"},
-    "CAFE_001": {"label": "Cafeteria", "x": 30, "y": 40, "floor": "00", "building": "Main", "type": "common"},
-}
-
-# Enhanced asset types with icons
-ASSET_TYPES = {
-    "Room": {"icon": "🏢", "category": "Space"},
-    "Meeting Room": {"icon": "🤝", "category": "Space"},
-    "Study Room": {"icon": "📚", "category": "Space"},
-    "Projector": {"icon": "📽️", "category": "Equipment"},
-    "Screen": {"icon": "📺", "category": "Equipment"},
-    "Whiteboard": {"icon": "📋", "category": "Equipment"},
-    "Chair": {"icon": "🪑", "category": "Furniture"},
-    "Table": {"icon": "🪵", "category": "Furniture"},
-    "Computer": {"icon": "💻", "category": "IT"},
-    "Monitor": {"icon": "🖥️", "category": "IT"},
-    "Other": {"icon": "📦", "category": "Other"}
-}
-
-# Booking duration options in minutes
-BOOKING_DURATIONS = {
-    "30 minutes": 30,
-    "1 hour": 60,
-    "2 hours": 120,
-    "3 hours": 180,
-    "4 hours": 240,
-    "6 hours": 360,
-    "8 hours": 480,
+    "R_A_09001": {"label": "Room A 09-001", "x": 10, "y": 20},
+    "H_A_09001": {"label": "Hallway near Room A 09-001", "x": 15, "y": 25},
+    "R_B_10012": {"label": "Room B 10-012", "x": 40, "y": 60},
+    "H_B_10012": {"label": "Hallway near Room B 10-012", "x": 45, "y": 65},
 }
 
 
 # ============================================================================
 # LOGGING CONFIGURATION
 # ============================================================================
+# Configure application logging for debugging and monitoring
+# In production, this could be extended to file or cloud logging
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
@@ -263,21 +235,6 @@ def is_room_location(location_id: str) -> bool:
         True if location is a room (starts with "R_"), False otherwise
     """
     return str(location_id).startswith("R_")
-
-
-def format_duration(minutes: int) -> str:
-    """Format duration in minutes to human-readable string."""
-    if minutes < 60:
-        return f"{minutes} minutes"
-    elif minutes == 60:
-        return "1 hour"
-    else:
-        hours = minutes // 60
-        remaining_minutes = minutes % 60
-        if remaining_minutes == 0:
-            return f"{hours} hours"
-        else:
-            return f"{hours}h {remaining_minutes}m"
 
 
 # ============================================================================
@@ -460,9 +417,7 @@ def init_booking_table(con: sqlite3.Connection) -> None:
             user_name TEXT NOT NULL,
             start_time TEXT NOT NULL,
             end_time TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            purpose TEXT,
-            participants INTEGER
+            created_at TEXT NOT NULL
         )
     """)
     con.commit()
@@ -480,9 +435,7 @@ def init_assets_table(con: sqlite3.Connection) -> None:
             asset_name TEXT NOT NULL,
             asset_type TEXT NOT NULL,
             location_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            last_moved TEXT,
-            notes TEXT
+            status TEXT NOT NULL
         )
     """)
     con.commit()
@@ -514,28 +467,6 @@ def migrate_db(con: sqlite3.Connection) -> None:
     
     if "resolved_at" not in cols:
         con.execute("ALTER TABLE submissions ADD COLUMN resolved_at TEXT")
-    
-    # Check and update bookings table
-    try:
-        con.execute("ALTER TABLE bookings ADD COLUMN purpose TEXT")
-    except:
-        pass  # Column already exists
-    
-    try:
-        con.execute("ALTER TABLE bookings ADD COLUMN participants INTEGER")
-    except:
-        pass  # Column already exists
-    
-    # Check and update assets table
-    try:
-        con.execute("ALTER TABLE assets ADD COLUMN last_moved TEXT")
-    except:
-        pass  # Column already exists
-    
-    try:
-        con.execute("ALTER TABLE assets ADD COLUMN notes TEXT")
-    except:
-        pass  # Column already exists
     
     # Ensure audit tables exist
     con.execute("""
@@ -570,45 +501,20 @@ def seed_assets(con: sqlite3.Connection) -> None:
     """
     # Demo data representing typical HSG assets
     assets = [
-        # Study Rooms
-        ("STUDY_A", "Study Room A", "Study Room", "R_A_09001", "available", None, "Quiet study area with natural light"),
-        ("STUDY_B", "Study Room B", "Study Room", "R_B_10012", "available", None, "Group study room with whiteboard"),
-        ("STUDY_C", "Study Room C", "Study Room", "R_C_11023", "available", None, "Individual study carrel"),
-        
-        # Meeting Rooms
-        ("MEET_1", "Meeting Room 1", "Meeting Room", "R_A_09001", "available", None, "Capacity: 8 people"),
-        ("MEET_2", "Meeting Room 2", "Meeting Room", "R_B_10012", "available", None, "Capacity: 12 people, video conferencing"),
-        ("MEET_3", "Meeting Room 3", "Meeting Room", "R_C_11023", "available", None, "Capacity: 6 people"),
-        
-        # Equipment
-        ("PROJ_1", "Portable Projector 1", "Projector", "H_A_09001", "available", None, "HD Projector with HDMI"),
-        ("PROJ_2", "Portable Projector 2", "Projector", "H_B_10012", "available", None, "4K Projector"),
-        ("SCREEN_1", "Projection Screen", "Screen", "R_A_09001", "available", None, "120\" motorized screen"),
-        ("SCREEN_2", "Portable Screen", "Screen", "H_B_10012", "available", None, "80\" portable screen"),
-        ("WHITE_1", "Whiteboard A", "Whiteboard", "R_A_09001", "available", None, "Mobile whiteboard with markers"),
-        ("WHITE_2", "Whiteboard B", "Whiteboard", "R_B_10012", "available", None, "Wall-mounted whiteboard"),
-        
-        # Furniture
-        ("CHAIR_1", "Ergonomic Chair 1", "Chair", "R_A_09001", "available", None, "Ergonomic office chair"),
-        ("CHAIR_2", "Ergonomic Chair 2", "Chair", "R_A_09001", "available", None, "Ergonomic office chair"),
-        ("CHAIR_3", "Hallway Chair 1", "Chair", "H_A_09001", "available", None, "Waiting area chair"),
-        ("CHAIR_4", "Hallway Chair 2", "Chair", "H_A_09001", "available", None, "Waiting area chair"),
-        ("TABLE_1", "Meeting Table", "Table", "R_A_09001", "available", None, "Conference table for 8"),
-        ("TABLE_2", "Study Table", "Table", "R_B_10012", "available", None, "Individual study table"),
-        
-        # IT Equipment
-        ("COMP_1", "Desktop Computer 1", "Computer", "LIB_001", "available", None, "Windows PC with Adobe Suite"),
-        ("COMP_2", "Desktop Computer 2", "Computer", "LIB_001", "available", None, "Mac with design software"),
-        ("MONITOR_1", "External Monitor", "Monitor", "H_A_09001", "available", None, "27\" 4K monitor"),
-        ("MONITOR_2", "External Monitor", "Monitor", "H_B_10012", "available", None, "24\" HD monitor"),
+        ("ROOM_A", "Study Room A", "Room", "R_A_09001", "available"),
+        ("ROOM_B", "Study Room B", "Room", "R_B_10012", "available"),
+        ("MEETING_1", "Meeting Room 1", "Room", "R_B_10012", "available"),
+        ("PROJECTOR_1", "Portable Projector 1", "Equipment", "H_B_10012", "available"),
+        ("CHAIR_H1", "Hallway Chair 1", "Chair", "H_A_09001", "available"),
+        ("CHAIR_H2", "Hallway Chair 2", "Chair", "H_A_09001", "available"),
     ]
     
     for asset in assets:
         con.execute(
             """
             INSERT OR IGNORE INTO assets
-            (asset_id, asset_name, asset_type, location_id, status, last_moved, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (asset_id, asset_name, asset_type, location_id, status)
+            VALUES (?, ?, ?, ?, ?)
             """,
             asset,
         )
@@ -679,7 +585,7 @@ def fetch_assets(con: sqlite3.Connection) -> pd.DataFrame:
     """
     return pd.read_sql(
         """
-        SELECT asset_id, asset_name, asset_type, location_id, status, last_moved, notes
+        SELECT asset_id, asset_name, asset_type, location_id, status
         FROM assets
         ORDER BY asset_type, asset_name
         """,
@@ -706,76 +612,10 @@ def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list
         FROM assets
         WHERE location_id = ?
           AND asset_type != 'Room'
-          AND asset_type != 'Meeting Room'
-          AND asset_type != 'Study Room'
         """,
         (room_location_id,),
     ).fetchall()
     return [r[0] for r in rows]
-
-
-def fetch_assets_by_type(con: sqlite3.Connection, asset_type: str) -> pd.DataFrame:
-    """Retrieve assets filtered by type.
-    
-    Args:
-        con: Active database connection
-        asset_type: Type of asset to filter by
-        
-    Returns:
-        DataFrame containing filtered assets
-    """
-    return pd.read_sql(
-        """
-        SELECT asset_id, asset_name, location_id, status
-        FROM assets
-        WHERE asset_type = ?
-        ORDER BY asset_name
-        """,
-        con,
-        params=(asset_type,),
-    )
-
-
-def fetch_assets_by_location(con: sqlite3.Connection, location_id: str) -> pd.DataFrame:
-    """Retrieve assets filtered by location.
-    
-    Args:
-        con: Active database connection
-        location_id: Location ID to filter by
-        
-    Returns:
-        DataFrame containing filtered assets
-    """
-    return pd.read_sql(
-        """
-        SELECT asset_id, asset_name, asset_type, status
-        FROM assets
-        WHERE location_id = ?
-        ORDER BY asset_type, asset_name
-        """,
-        con,
-        params=(location_id,),
-    )
-
-
-def fetch_all_bookings(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve all bookings from database.
-    
-    Args:
-        con: Active database connection
-        
-    Returns:
-        DataFrame containing all bookings
-    """
-    return pd.read_sql(
-        """
-        SELECT b.*, a.asset_name, a.asset_type
-        FROM bookings b
-        JOIN assets a ON b.asset_id = a.asset_id
-        ORDER BY b.start_time DESC
-        """,
-        con,
-    )
 
 
 def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
@@ -795,7 +635,7 @@ def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
 
 
 # ============================================================================
-# ENHANCED BOOKING SYSTEM FUNCTIONS
+# BOOKING SYSTEM FUNCTIONS
 # ============================================================================
 def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
     """Update asset statuses based on active bookings.
@@ -836,21 +676,14 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
             (asset_id,),
         )
         
-        # Enhanced: If booking a room, automatically book all compatible assets inside it
-        if asset_type in ["Room", "Meeting Room", "Study Room"] and is_room_location(location_id):
+        # If booking a room, automatically book all assets inside it
+        if asset_type == "Room" and is_room_location(location_id):
             inside_assets = fetch_assets_in_room(con, location_id)
             for aid in inside_assets:
-                # Check if asset is compatible with room booking (e.g., chairs, tables, projectors)
-                asset_info = con.execute(
-                    "SELECT asset_type FROM assets WHERE asset_id = ?",
-                    (aid,)
-                ).fetchone()
-                
-                if asset_info and asset_info[0] in ["Chair", "Table", "Projector", "Screen", "Whiteboard"]:
-                    con.execute(
-                        "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
-                        (aid,),
-                    )
+                con.execute(
+                    "UPDATE assets SET status = 'booked' WHERE asset_id = ?",
+                    (aid,),
+                )
     
     con.commit()
 
@@ -893,7 +726,7 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
     now_iso = now_zurich().isoformat()
     return pd.read_sql(
         """
-        SELECT user_name, start_time, end_time, purpose, participants
+        SELECT user_name, start_time, end_time
         FROM bookings
         WHERE asset_id = ?
           AND end_time >= ?
@@ -901,31 +734,6 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
         """,
         con,
         params=(asset_id, now_iso),
-    )
-
-
-def fetch_todays_bookings(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve today's bookings for calendar view.
-    
-    Args:
-        con: Active database connection
-        
-    Returns:
-        DataFrame containing today's bookings
-    """
-    today_start = now_zurich().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_end = today_start + timedelta(days=1)
-    
-    return pd.read_sql(
-        """
-        SELECT b.*, a.asset_name, a.asset_type, a.location_id
-        FROM bookings b
-        JOIN assets a ON b.asset_id = a.asset_id
-        WHERE b.start_time >= ? AND b.start_time < ?
-        ORDER BY b.start_time
-        """,
-        con,
-        params=(today_start.isoformat(), today_end.isoformat()),
     )
 
 
@@ -953,57 +761,6 @@ def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | No
     if not row or not row[0]:
         return None
     return iso_to_dt(str(row[0]))
-
-
-def calculate_asset_utilization(con: sqlite3.Connection, asset_id: str, days: int = 7) -> float:
-    """Calculate asset utilization percentage over the past N days.
-    
-    Args:
-        con: Active database connection
-        asset_id: ID of asset to calculate utilization for
-        days: Number of days to look back
-        
-    Returns:
-        Utilization percentage (0-100)
-    """
-    try:
-        end_date = now_zurich()
-        start_date = end_date - timedelta(days=days)
-        
-        # Calculate total possible booking time (in minutes)
-        total_minutes = days * 24 * 60
-        
-        # Calculate booked time
-        query = """
-            SELECT SUM(
-                (julianday(MIN(end_time, ?)) - julianday(MAX(start_time, ?))) * 24 * 60
-            ) as booked_minutes
-            FROM bookings
-            WHERE asset_id = ?
-              AND start_time < ?
-              AND end_time > ?
-        """
-        
-        result = con.execute(
-            query,
-            (
-                end_date.isoformat(),
-                start_date.isoformat(),
-                asset_id,
-                end_date.isoformat(),
-                start_date.isoformat(),
-            ),
-        ).fetchone()
-        
-        booked_minutes = result[0] if result and result[0] else 0
-        
-        # Calculate utilization percentage
-        if total_minutes > 0:
-            return (booked_minutes / total_minutes) * 100
-        return 0.0
-    except Exception as e:
-        logger.error(f"Error calculating utilization for asset {asset_id}: {e}")
-        return 0.0
 
 
 # ============================================================================
@@ -1217,36 +974,6 @@ HSG Service Team
     return subject, body
 
 
-def booking_confirmation_email(recipient_name: str, asset_name: str, start_time: datetime, end_time: datetime) -> tuple[str, str]:
-    """Generate booking confirmation email.
-    
-    Args:
-        recipient_name: Name of the person who made the booking
-        asset_name: Name of the booked asset
-        start_time: Booking start time
-        end_time: Booking end time
-        
-    Returns:
-        Tuple of (subject, body) for the booking confirmation email
-    """
-    subject = f"HSG Asset Booking Confirmation: {asset_name}"
-    body = f"""Dear {recipient_name},
-
-Your booking has been confirmed:
-
-**Asset:** {asset_name}
-**Date:** {start_time.strftime('%A, %d %B %Y')}
-**Time:** {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}
-**Duration:** {format_duration(int((end_time - start_time).total_seconds() / 60))}
-
-Please arrive on time and ensure the asset is left in good condition.
-
-Kind regards,
-HSG Facility Management
-"""
-    return subject, body
-
-
 # ============================================================================
 # REPORTING FUNCTIONS
 # ============================================================================
@@ -1431,10 +1158,7 @@ def asset_display_label(row: pd.Series) -> str:
         status_text = str(row.get("status", ""))
     
     loc = location_label(str(row.get("location_id", "")))
-    asset_type = str(row.get("asset_type", ""))
-    icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
-    
-    return f'{icon} {row.get("asset_name", "")} • {asset_type} • {loc} • {status_text}'
+    return f'{row.get("asset_name", "")} • {row.get("asset_type", "")} • {loc} • {status_text}'
 
 
 def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -1456,137 +1180,19 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
     # Remove invalid rows and sort
     out = out.dropna(subset=["start_time", "end_time"]).sort_values(by=["start_time"])
     
-    # Calculate duration
-    out["duration"] = (out["end_time"] - out["start_time"]).dt.total_seconds() / 60
-    
+    # Format timestamps for display
     out["start_time"] = out["start_time"].dt.strftime("%Y-%m-%d %H:%M")
     out["end_time"] = out["end_time"].dt.strftime("%Y-%m-%d %H:%M")
-    out["duration"] = out["duration"].apply(format_duration)
     
     return out.rename(columns={
         "user_name": "User",
         "start_time": "Start Time",
-        "end_time": "End Time",
-        "duration": "Duration",
-        "purpose": "Purpose",
-        "participants": "Participants"
+        "end_time": "End Time"
     })
 
 
-def render_asset_map(con: sqlite3.Connection) -> None:
-    """Render a simple text-based asset location map."""
-    st.subheader("🗺️ Asset Locations")
-    
-    # Fetch assets with location data
-    assets_df = fetch_assets(con)
-    
-    if assets_df.empty:
-        st.info("No assets available to display.")
-        return
-    
-    # Group by building and floor
-    buildings = {}
-    for _, asset in assets_df.iterrows():
-        loc_id = asset["location_id"]
-        if loc_id in LOCATIONS:
-            loc = LOCATIONS[loc_id]
-            building = loc.get("building", "Unknown")
-            floor = loc.get("floor", "Unknown")
-            
-            if building not in buildings:
-                buildings[building] = {}
-            if floor not in buildings[building]:
-                buildings[building][floor] = []
-            
-            status_icon = "✅" if asset["status"].lower() == "available" else "⛔"
-            asset_type = asset["asset_type"]
-            icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
-            
-            buildings[building][floor].append({
-                "name": asset["asset_name"],
-                "type": asset_type,
-                "icon": icon,
-                "status_icon": status_icon,
-                "location": loc["label"]
-            })
-    
-    if not buildings:
-        st.info("No location data available for assets.")
-        return
-    
-    # Display building-by-building
-    for building, floors in sorted(buildings.items()):
-        with st.expander(f"🏢 Building {building}", expanded=True):
-            for floor, assets in sorted(floors.items()):
-                st.markdown(f"**Floor {floor}**")
-                
-                # Create a simple grid
-                cols = st.columns(3)
-                for idx, asset in enumerate(assets):
-                    col_idx = idx % 3
-                    with cols[col_idx]:
-                        st.markdown(f"""
-                        <div style="border: 1px solid #ddd; border-radius: 5px; padding: 10px; margin-bottom: 10px; background-color: #f9f9f9;">
-                            <div style="font-size: 18px;">{asset['icon']} {asset['name']}</div>
-                            <div style="color: #666; font-size: 0.9em;">{asset['type']}</div>
-                            <div style="color: #666; font-size: 0.9em;">📍 {asset['location']}</div>
-                            <div style="margin-top: 5px;">{asset['status_icon']} {"Available" if asset['status_icon'] == "✅" else "Booked"}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-
-def render_booking_calendar(con: sqlite3.Connection, asset_id: str = None) -> None:
-    """Render a text-based calendar view of bookings."""
-    st.subheader("📅 Booking Schedule")
-    
-    # Fetch bookings
-    if asset_id:
-        bookings_df = fetch_future_bookings(con, asset_id)
-        title = f"Bookings for Asset"
-    else:
-        bookings_df = fetch_todays_bookings(con)
-        title = "Today's Bookings"
-    
-    if bookings_df.empty:
-        st.info("No bookings scheduled.")
-        return
-    
-    # Prepare calendar data
-    bookings_df["start_dt"] = pd.to_datetime(bookings_df["start_time"], errors="coerce")
-    bookings_df["end_dt"] = pd.to_datetime(bookings_df["end_time"], errors="coerce")
-    bookings_df = bookings_df.dropna(subset=["start_dt", "end_dt"])
-    
-    if bookings_df.empty:
-        st.info("No valid booking data available.")
-        return
-    
-    # Sort by start time
-    bookings_df = bookings_df.sort_values("start_dt")
-    
-    # Display as timeline
-    st.markdown(f"**{title}**")
-    
-    for _, booking in bookings_df.iterrows():
-        asset_name = booking.get("asset_name", "Unknown Asset")
-        start_time = booking["start_dt"].strftime("%H:%M")
-        end_time = booking["end_dt"].strftime("%H:%M")
-        user_name = booking["user_name"]
-        purpose = booking.get("purpose", "No purpose specified")
-        
-        with st.container(border=True):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.markdown(f"**{asset_name}**")
-                st.markdown(f"👤 {user_name}")
-                st.markdown(f"📝 {purpose}")
-            with col2:
-                st.markdown(f"**{start_time} - {end_time}**")
-                duration = int((booking["end_dt"] - booking["start_dt"]).total_seconds() / 60)
-                st.markdown(f"⏱️ {format_duration(duration)}")
-
-
 # ============================================================================
-# ENHANCED APPLICATION PAGES
+# APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection) -> None:
     """Display issue submission form with validation and confirmation.
@@ -1982,15 +1588,12 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
 
 def page_booking(con: sqlite3.Connection) -> None:
-    """ENHANCED: Display asset booking interface with availability checking.
+    """Display asset booking interface with availability checking.
     
     Args:
         con: Active database connection
     """
     st.header("📅 Book an Asset")
-    
-    # Display today's bookings calendar
-    render_booking_calendar(con)
     
     # Sync booking statuses
     try:
@@ -2018,11 +1621,9 @@ def page_booking(con: sqlite3.Connection) -> None:
         ).strip().lower()
     
     with col_search2:
-        # Get unique asset types
-        all_types = sorted(assets_df["asset_type"].unique().tolist())
         type_filter = st.selectbox(
             "Asset Type",
-            options=["All Types"] + all_types,
+            options=["All Types"] + sorted(assets_df["asset_type"].unique().tolist()),
             help="Filter by asset category"
         )
     
@@ -2067,118 +1668,56 @@ def page_booking(con: sqlite3.Connection) -> None:
         st.info("No assets match your search criteria.")
         return
     
-    # Asset selection with cards
+    # Asset selection
     st.subheader("🎯 Select Asset")
     
-    # Display assets in a grid
-    cols = st.columns(3)
-    asset_options = {}
+    asset_labels = {str(r["asset_id"]): str(r["display_label"]) for _, r in view_df.iterrows()}
     
-    for idx, (_, row) in enumerate(view_df.iterrows()):
-        col_idx = idx % 3
-        with cols[col_idx]:
-            asset_id = str(row["asset_id"])
-            asset_options[asset_id] = row["display_label"]
-            
-            # Create asset card
-            status_color = "#4CAF50" if row["status"].lower() == "available" else "#F44336"
-            status_icon = "✅" if row["status"].lower() == "available" else "⛔"
-            asset_type = row["asset_type"]
-            icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
-            
-            st.markdown(f"""
-            <div style="border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 15px; 
-                 background-color: #f9f9f9;">
-                <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                    <div style="font-size: 24px; margin-right: 10px;">{icon}</div>
-                    <div>
-                        <h4 style="margin: 0; color: #333;">{row['asset_name']}</h4>
-                        <p style="margin: 0; color: #666; font-size: 0.9em;">{asset_type}</p>
-                    </div>
-                </div>
-                <p style="margin: 5px 0; color: #666; font-size: 0.9em;">
-                    📍 {row['location_label']}
-                </p>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="background-color: {status_color}; color: white; padding: 3px 10px; 
-                          border-radius: 15px; font-size: 0.8em;">
-                        {status_icon} {row['status'].capitalize()}
-                    </span>
-                    <button onclick="document.getElementById('asset_{asset_id}').click()" 
-                            style="background: none; border: 1px solid {HSG_GREEN}; color: {HSG_GREEN}; 
-                                   padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em;">
-                        Select
-                    </button>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Hidden radio button for selection
-            if st.radio(
-                "Select",
-                [asset_id],
-                key=f"asset_radio_{asset_id}",
-                label_visibility="collapsed",
-                index=0 if asset_id == st.session_state.get("booking_asset_id") else None
-            ):
-                st.session_state["booking_asset_id"] = asset_id
+    # Preserve selection across reruns
+    default_asset_id = st.session_state.get("booking_asset_id")
+    if default_asset_id not in asset_labels:
+        default_asset_id = list(asset_labels.keys())[0]
     
-    # Get selected asset
-    selected_asset_id = st.session_state.get("booking_asset_id")
-    if not selected_asset_id or selected_asset_id not in view_df["asset_id"].values:
-        selected_asset_id = view_df.iloc[0]["asset_id"]
-        st.session_state["booking_asset_id"] = selected_asset_id
+    asset_id = st.selectbox(
+        "Choose asset to book:",
+        options=list(asset_labels.keys()),
+        index=list(asset_labels.keys()).index(default_asset_id),
+        format_func=lambda aid: asset_labels[aid],
+        help="Select an asset to view details and create booking"
+    )
+    st.session_state["booking_asset_id"] = asset_id
     
-    selected_asset = assets_df[assets_df["asset_id"] == selected_asset_id].iloc[0]
+    # Display selected asset details
+    selected_asset = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
     
-    # Asset details section
-    st.divider()
-    st.subheader(f"📋 {selected_asset['asset_name']} Details")
-    
-    col_details1, col_details2, col_details3, col_details4 = st.columns(4)
+    st.subheader("📋 Asset Details")
+    col_details1, col_details2, col_details3 = st.columns(3)
     
     with col_details1:
         st.metric("Status", selected_asset["status"].capitalize())
     
     with col_details2:
-        asset_type = selected_asset["asset_type"]
-        icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
-        st.metric("Type", f"{icon} {asset_type}")
+        st.metric("Type", selected_asset["asset_type"])
     
     with col_details3:
         st.metric("Location", location_label(str(selected_asset["location_id"])))
-    
-    with col_details4:
-        # Calculate utilization
-        utilization = calculate_asset_utilization(con, selected_asset_id)
-        st.metric("Utilization (7d)", f"{utilization:.1f}%")
     
     # Availability status with next available time
     if selected_asset["status"].lower() == "available":
         st.success("✅ This asset is available for booking.")
     else:
-        next_free = next_available_time(con, selected_asset_id)
+        next_free = next_available_time(con, asset_id)
         if next_free:
-            time_until = next_free - now_zurich()
-            hours_until = int(time_until.total_seconds() / 3600)
-            minutes_until = int((time_until.total_seconds() % 3600) / 60)
-            
-            st.warning(f"""
-            ⏰ **Currently Booked**
-            
-            Next available: **{next_free.strftime('%A, %d %B %Y at %H:%M')}**
-            (in {hours_until}h {minutes_until}m)
-            """)
+            st.warning(
+                f"⛔ Currently booked. Next available: **{next_free.strftime('%Y-%m-%d %H:%M')}**"
+            )
         else:
-            st.warning("⛔ Currently booked - No future bookings scheduled")
-    
-    # Show asset-specific booking calendar
-    render_booking_calendar(con, selected_asset_id)
+            st.warning("⛔ Currently booked. No future bookings found.")
     
     # Show upcoming bookings
     st.subheader("📅 Upcoming Bookings")
     try:
-        future_bookings = fetch_future_bookings(con, selected_asset_id)
+        future_bookings = fetch_future_bookings(con, asset_id)
         if future_bookings.empty:
             st.info("No upcoming bookings scheduled.")
         else:
@@ -2240,45 +1779,31 @@ def page_booking(con: sqlite3.Connection) -> None:
             )
         
         with col_time3:
+            duration_options = {
+                "1 hour": 1,
+                "2 hours": 2,
+                "3 hours": 3,
+                "4 hours": 4,
+                "6 hours": 6,
+                "8 hours": 8
+            }
             duration_choice = st.selectbox(
                 "Duration*",
-                options=list(BOOKING_DURATIONS.keys()),
+                options=list(duration_options.keys()),
                 help="Select booking duration"
             )
-            duration_minutes = BOOKING_DURATIONS[duration_choice]
-        
-        # Additional booking details
-        st.subheader("Additional Details (Optional)")
-        col_details1, col_details2 = st.columns(2)
-        
-        with col_details1:
-            purpose = st.text_input(
-                "Purpose of Booking",
-                placeholder="e.g., Study group, Meeting, Presentation...",
-                help="What will you use the asset for?"
-            )
-        
-        with col_details2:
-            participants = st.number_input(
-                "Number of Participants",
-                min_value=1,
-                max_value=50,
-                value=1,
-                help="How many people will be using the asset?"
-            )
+            duration_hours = duration_options[duration_choice]
         
         # Calculate and display booking summary
         start_dt = APP_TZ.localize(datetime.combine(start_date, start_time))
-        end_dt = start_dt + timedelta(minutes=duration_minutes)
+        end_dt = start_dt + timedelta(hours=duration_hours)
         
         st.info(f"""
         **Booking Summary:**
         - **Asset:** {selected_asset['asset_name']}
         - **Date:** {start_dt.strftime('%A, %d %B %Y')}
         - **Time:** {start_dt.strftime('%H:%M')} → {end_dt.strftime('%H:%M')}
-        - **Duration:** {format_duration(duration_minutes)}
-        - **Purpose:** {purpose if purpose else 'Not specified'}
-        - **Participants:** {participants}
+        - **Duration:** {duration_hours} hour{'s' if duration_hours > 1 else ''}
         """)
         
         # Submit booking
@@ -2308,7 +1833,7 @@ def page_booking(con: sqlite3.Connection) -> None:
     
     # Check availability
     try:
-        if not is_asset_available(con, selected_asset_id, start_dt, end_dt):
+        if not is_asset_available(con, asset_id, start_dt, end_dt):
             st.error("This asset is already booked during the selected time period.")
             return
     except Exception as e:
@@ -2320,32 +1845,21 @@ def page_booking(con: sqlite3.Connection) -> None:
     try:
         con.execute(
             """
-            INSERT INTO bookings (asset_id, user_name, start_time, end_time, created_at, purpose, participants)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO bookings (asset_id, user_name, start_time, end_time, created_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
-                selected_asset_id,
+                asset_id,
                 user_name,
                 start_dt.isoformat(timespec="seconds"),
                 end_dt.isoformat(timespec="seconds"),
                 now_zurich_str(),
-                purpose if purpose else None,
-                participants if participants > 1 else None,
             ),
         )
         con.commit()
         
         # Update asset statuses
         sync_asset_statuses_from_bookings(con)
-        
-        # Send confirmation email
-        subject, body = booking_confirmation_email(
-            user_name,
-            selected_asset['asset_name'],
-            start_dt,
-            end_dt
-        )
-        ok, msg = send_email(ADMIN_INBOX, subject, body)  # Send to admin for now
         
         # Success message
         st.success(f"""
@@ -2355,10 +1869,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         - Asset: {selected_asset['asset_name']}
         - Date: {start_dt.strftime('%A, %d %B %Y')}
         - Time: {start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}
-        - Duration: {format_duration(duration_minutes)}
-        - Booking Reference: {con.execute("SELECT last_insert_rowid()").fetchone()[0]}
-        
-        A confirmation email has been sent.
+        - Duration: {duration_hours} hour{'s' if duration_hours > 1 else ''}
         """)
         
         # Auto-refresh to show updated status
@@ -2370,15 +1881,12 @@ def page_booking(con: sqlite3.Connection) -> None:
 
 
 def page_assets(con: sqlite3.Connection) -> None:
-    """ENHANCED: Display asset tracking and management interface.
+    """Display asset tracking and management interface.
     
     Args:
         con: Active database connection
     """
-    st.header("📍 Asset Tracking & Management")
-    
-    # Display asset map
-    render_asset_map(con)
+    st.header("📍 Asset Tracking")
     
     # Load assets data
     try:
@@ -2392,56 +1900,23 @@ def page_assets(con: sqlite3.Connection) -> None:
         st.info("No assets available in the system.")
         return
     
-    # Asset statistics
-    st.subheader("📊 Asset Statistics")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_assets = len(df)
-        st.metric("Total Assets", total_assets)
-    
-    with col2:
-        available_assets = len(df[df["status"] == "available"])
-        st.metric("Available", available_assets)
-    
-    with col3:
-        booked_assets = len(df[df["status"] == "booked"])
-        st.metric("Booked", booked_assets)
-    
-    with col4:
-        asset_types = df["asset_type"].nunique()
-        st.metric("Asset Types", asset_types)
+    # Add location labels for display
+    df = df.copy()
+    df["location_label"] = df["location_id"].apply(location_label)
     
     # Filtering options
     st.subheader("🔍 Filter Assets")
-    col_filter1, col_filter2, col_filter3 = st.columns(3)
+    col_filter1, col_filter2 = st.columns(2)
     
     with col_filter1:
-        # Filter by asset type category
-        type_categories = {}
-        for asset_type in df["asset_type"].unique():
-            category = ASSET_TYPES.get(asset_type, {}).get("category", "Other")
-            if category not in type_categories:
-                type_categories[category] = []
-            type_categories[category].append(asset_type)
-        
-        category_filter = st.multiselect(
-            "Filter by Category",
-            options=sorted(type_categories.keys()),
-            default=[],
-            help="Select asset categories to display"
-        )
-    
-    with col_filter2:
         location_filter = st.multiselect(
             "Filter by Location",
-            options=sorted(df["location_id"].apply(location_label).unique()),
-            default=[],
+            options=sorted(df["location_label"].unique()),
+            default=sorted(df["location_label"].unique()),
             help="Select locations to display"
         )
     
-    with col_filter3:
+    with col_filter2:
         status_filter = st.multiselect(
             "Filter by Status",
             options=sorted(df["status"].unique()),
@@ -2450,77 +1925,33 @@ def page_assets(con: sqlite3.Connection) -> None:
         )
     
     # Apply filters
-    filtered_df = df.copy()
-    filtered_df["location_label"] = filtered_df["location_id"].apply(location_label)
+    filtered_df = df[
+        (df["location_label"].isin(location_filter)) &
+        (df["status"].isin(status_filter))
+    ]
     
-    if category_filter:
-        # Get all asset types in selected categories
-        selected_types = []
-        for category in category_filter:
-            selected_types.extend(type_categories.get(category, []))
-        filtered_df = filtered_df[filtered_df["asset_type"].isin(selected_types)]
-    
-    if location_filter:
-        filtered_df = filtered_df[filtered_df["location_label"].isin(location_filter)]
-    
-    if status_filter:
-        filtered_df = filtered_df[filtered_df["status"].isin(status_filter)]
-    
-    # Display assets in tabs by category
-    st.subheader("📦 Asset Inventory")
+    # Display assets grouped by location
+    st.subheader("📦 Assets by Location")
     
     if filtered_df.empty:
         st.info("No assets match the selected filters.")
     else:
-        # Create tabs for different views
-        tab1, tab2, tab3 = st.tabs(["📊 Table View", "🏢 By Location", "🏷️ By Type"])
-        
-        with tab1:
-            # Table view
-            display_data = filtered_df[[
-                "asset_id", "asset_name", "asset_type", "status", "location_label", "notes"
-            ]].copy()
-            display_data = display_data.rename(columns={
-                "asset_id": "ID",
-                "asset_name": "Name", 
-                "asset_type": "Type",
-                "status": "Status",
-                "location_label": "Location",
-                "notes": "Notes"
-            })
-            st.dataframe(display_data, use_container_width=True, hide_index=True)
-        
-        with tab2:
-            # Group by location
-            for location, group in filtered_df.groupby("location_label"):
-                with st.expander(f"📍 {location} ({len(group)} assets)", expanded=False):
-                    loc_display = group[["asset_id", "asset_name", "asset_type", "status", "notes"]].copy()
-                    loc_display = loc_display.rename(columns={
-                        "asset_id": "ID",
-                        "asset_name": "Name", 
-                        "asset_type": "Type",
-                        "status": "Status",
-                        "notes": "Notes"
-                    })
-                    st.dataframe(loc_display, use_container_width=True, hide_index=True)
-        
-        with tab3:
-            # Group by type
-            for asset_type, group in filtered_df.groupby("asset_type"):
-                icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
-                with st.expander(f"{icon} {asset_type} ({len(group)} assets)", expanded=False):
-                    type_display = group[["asset_id", "asset_name", "status", "location_label", "notes"]].copy()
-                    type_display = type_display.rename(columns={
-                        "asset_id": "ID",
-                        "asset_name": "Name", 
-                        "status": "Status",
-                        "location_label": "Location",
-                        "notes": "Notes"
-                    })
-                    st.dataframe(type_display, use_container_width=True, hide_index=True)
+        for location, group in filtered_df.groupby("location_label"):
+            with st.expander(f"🏢 {location} ({len(group)} assets)", expanded=False):
+                display_data = group[[
+                    "asset_id", "asset_name", "asset_type", "status"
+                ]].copy()
+                display_data = display_data.rename(columns={
+                    "asset_id": "ID",
+                    "asset_name": "Name", 
+                    "asset_type": "Type",
+                    "status": "Status"
+                })
+                st.dataframe(display_data, use_container_width=True, hide_index=True)
+    
+    st.divider()
     
     # Asset movement functionality
-    st.divider()
     st.subheader("🚚 Move Asset to New Location")
     
     # Prepare asset selection data
@@ -2535,160 +1966,54 @@ def page_assets(con: sqlite3.Connection) -> None:
         return
     
     # Asset selection
-    col_sel1, col_sel2 = st.columns([2, 1])
-    
-    with col_sel1:
-        asset_id = st.selectbox(
-            "Select asset to move:",
-            options=list(asset_options.keys()),
-            format_func=lambda aid: asset_options[aid],
-            help="Choose which asset to relocate",
-            key="move_asset_select"
-        )
-    
-    with col_sel2:
-        if st.button("📋 Show Details", use_container_width=True):
-            st.session_state.show_asset_details = True
+    asset_id = st.selectbox(
+        "Select asset to move:",
+        options=list(asset_options.keys()),
+        format_func=lambda aid: asset_options[aid],
+        help="Choose which asset to relocate"
+    )
     
     # Display current asset details
     selected_asset = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
     
-    if st.session_state.get("show_asset_details", False):
-        with st.expander("📋 Current Asset Details", expanded=True):
-            col_current1, col_current2, col_current3 = st.columns(3)
-            with col_current1:
-                st.metric("Status", selected_asset["status"].capitalize())
-            with col_current2:
-                asset_type = selected_asset["asset_type"]
-                icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
-                st.metric("Type", f"{icon} {asset_type}")
-            with col_current3:
-                st.metric("Current Location", str(selected_asset["location_label"]))
-            
-            if selected_asset.get("notes"):
-                st.info(f"**Notes:** {selected_asset['notes']}")
-            
-            if selected_asset.get("last_moved"):
-                last_moved = iso_to_dt(selected_asset["last_moved"])
-                if last_moved:
-                    st.caption(f"Last moved: {last_moved.strftime('%Y-%m-%d %H:%M')}")
+    col_current1, col_current2, col_current3 = st.columns(3)
+    with col_current1:
+        st.metric("Current Status", selected_asset["status"].capitalize())
+    with col_current2:
+        st.metric("Asset Type", selected_asset["asset_type"])
+    with col_current3:
+        st.metric("Current Location", str(selected_asset["location_label"]))
     
     # New location selection
     st.subheader("🎯 Select New Location")
-    
-    # Create location selector
-    location_options = []
-    for loc_id, loc_data in sorted(LOCATIONS.items(), key=lambda x: x[1]["label"]):
-        building = loc_data.get("building", "Unknown")
-        location_options.append(f"📍 {loc_data['label']} (Building {building})")
-    
-    selected_location_display = st.selectbox(
-        "Choose destination:",
-        options=location_options,
-        help="Select the new location for this asset",
-        key="new_location_select"
+    new_location_id = st.selectbox(
+        "New location:",
+        options=list(LOCATIONS.keys()),
+        format_func=lambda x: LOCATIONS[x]["label"],
+        help="Choose the destination location"
     )
-    
-    # Find the actual location ID
-    new_location_id = None
-    for loc_id, loc_data in LOCATIONS.items():
-        if f"📍 {loc_data['label']}" in selected_location_display:
-            new_location_id = loc_id
-            break
-    
-    # Additional move details
-    move_reason = st.text_area(
-        "Reason for move (optional):",
-        placeholder="e.g., Maintenance, Reallocation, Repair, Cleaning...",
-        height=80,
-        key="move_reason"
-    )
-    
-    add_notes = st.checkbox("Update asset notes with move information", key="add_move_notes")
     
     # Move confirmation
-    col_confirm1, col_confirm2, col_confirm3 = st.columns([1, 2, 1])
-    with col_confirm2:
-        if st.button("🚀 Move Asset", type="primary", use_container_width=True):
-            if not new_location_id:
-                st.error("Please select a valid location.")
-            elif new_location_id == selected_asset["location_id"]:
-                st.warning("Asset is already at this location.")
-            else:
-                try:
-                    # Update asset location
-                    con.execute(
-                        """
-                        UPDATE assets 
-                        SET location_id = ?, 
-                            last_moved = ?,
-                            notes = CASE 
-                                WHEN ? = 1 THEN COALESCE(notes || '\n', '') || ?
-                                ELSE notes 
-                            END
-                        WHERE asset_id = ?
-                        """,
-                        (
-                            new_location_id,
-                            now_zurich_str(),
-                            1 if add_notes and move_reason else 0,
-                            f"Moved to {LOCATIONS[new_location_id]['label']} on {now_zurich().strftime('%Y-%m-%d')}: {move_reason}" if move_reason else f"Moved to {LOCATIONS[new_location_id]['label']} on {now_zurich().strftime('%Y-%m-%d')}",
-                            asset_id,
-                        ),
-                    )
-                    con.commit()
-                    
-                    # Success message
-                    st.success(f"""
-                    ✅ **Asset Moved Successfully!**
-                    
-                    **From:** {selected_asset['location_label']}
-                    **To:** {LOCATIONS[new_location_id]['label']}
-                    
-                    {f"**Reason:** {move_reason}" if move_reason else ""}
-                    
-                    Asset status and location have been updated.
-                    """)
-                    
-                    # Clear session state and refresh
-                    st.session_state.show_asset_details = False
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Failed to move asset: {e}")
-                    logger.error(f"Asset movement error: {e}")
-    
-    # Export functionality
-    st.divider()
-    st.subheader("💾 Export Asset Data")
-    
-    col_export1, col_export2 = st.columns(2)
-    
-    with col_export1:
-        # Export filtered assets to CSV
-        csv_data = filtered_df.to_csv(index=False)
-        st.download_button(
-            "Download Assets CSV",
-            data=csv_data,
-            file_name=f"hsg_assets_{now_zurich().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    with col_export2:
-        # Export all bookings
-        all_bookings = fetch_all_bookings(con)
-        if not all_bookings.empty:
-            bookings_csv = all_bookings.to_csv(index=False)
-            st.download_button(
-                "Download Bookings CSV",
-                data=bookings_csv,
-                file_name=f"hsg_bookings_{now_zurich().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+    if st.button("🚀 Move Asset", type="primary", use_container_width=True):
+        if new_location_id == selected_asset["location_id"]:
+            st.warning("Asset is already at this location.")
         else:
-            st.info("No bookings to export")
+            try:
+                con.execute(
+                    "UPDATE assets SET location_id = ? WHERE asset_id = ?",
+                    (new_location_id, asset_id)
+                )
+                con.commit()
+                st.success(f"""
+                ✅ Asset moved successfully!
+                
+                **From:** {selected_asset['location_label']}
+                **To:** {LOCATIONS[new_location_id]['label']}
+                """)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to move asset: {e}")
+                logger.error(f"Asset movement error: {e}")
 
 
 def page_overwrite_status(con: sqlite3.Connection) -> None:
@@ -2902,7 +2227,6 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
     try:
         issues = fetch_submissions(con)
         assets = fetch_assets(con)
-        bookings = fetch_all_bookings(con)
     except Exception as e:
         st.error(f"Failed to load data: {e}")
         logger.error(f"Dashboard data loading error: {e}")
@@ -2923,7 +2247,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
     
     with col3:
         resolved_issues = len(issues[issues["status"] == "Resolved"]) if not issues.empty else 0
-        st.metric("Resolved", resolved_issues)
+        st.metric("Resolved Issues", resolved_issues)
     
     with col4:
         total_assets = len(assets)
@@ -2931,7 +2255,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
         st.metric("Available Assets", f"{available_assets}/{total_assets}")
     
     # Create tabs for different views
-    tab1, tab2, tab3 = st.tabs(["📋 Issues Overview", "📦 Assets Overview", "📅 Bookings Overview"])
+    tab1, tab2 = st.tabs(["📋 Issues Overview", "📦 Assets Overview"])
     
     with tab1:
         st.subheader("Current Issues")
@@ -3021,50 +2345,6 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
                     st.metric("Busiest Location", top_location_name)
                 else:
                     st.metric("Busiest Location", "N/A")
-    
-    with tab3:
-        st.subheader("Bookings Overview")
-        
-        if bookings.empty:
-            st.info("No bookings scheduled.")
-        else:
-            # Today's bookings
-            today_start = now_zurich().replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = today_start + timedelta(days=1)
-            
-            bookings["start_time_dt"] = pd.to_datetime(bookings["start_time"], errors="coerce")
-            today_bookings = bookings[
-                (bookings["start_time_dt"] >= today_start) & 
-                (bookings["start_time_dt"] < today_end)
-            ]
-            
-            st.write(f"**Today's Bookings ({len(today_bookings)}):**")
-            if not today_bookings.empty:
-                display_today = today_bookings[["asset_name", "user_name", "start_time", "purpose"]].copy()
-                display_today["start_time"] = pd.to_datetime(display_today["start_time"]).dt.strftime("%H:%M")
-                display_today = display_today.rename(columns={
-                    "asset_name": "Asset",
-                    "user_name": "User",
-                    "start_time": "Time",
-                    "purpose": "Purpose"
-                })
-                st.dataframe(display_today, use_container_width=True, hide_index=True)
-            else:
-                st.info("No bookings scheduled for today.")
-            
-            # Upcoming bookings
-            upcoming_bookings = bookings[bookings["start_time_dt"] > now_zurich()].head(10)
-            if not upcoming_bookings.empty:
-                st.write(f"**Upcoming Bookings (next 10):**")
-                display_upcoming = upcoming_bookings[["asset_name", "user_name", "start_time", "purpose"]].copy()
-                display_upcoming["start_time"] = pd.to_datetime(display_upcoming["start_time"]).dt.strftime("%Y-%m-%d %H:%M")
-                display_upcoming = display_upcoming.rename(columns={
-                    "asset_name": "Asset",
-                    "user_name": "User",
-                    "start_time": "Time",
-                    "purpose": "Purpose"
-                })
-                st.dataframe(display_upcoming, use_container_width=True, hide_index=True)
 
 
 # ============================================================================
@@ -3076,7 +2356,7 @@ def main() -> None:
     st.set_page_config(
         page_title="HSG Reporting Tool",
         page_icon="🏛️",
-        layout="wide",
+        layout="centered",
         initial_sidebar_state="expanded"
     )
     
