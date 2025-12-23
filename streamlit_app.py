@@ -13,6 +13,11 @@ from __future__ import annotations
 # - All database writes use transactions (`with con:`) to keep updates atomic.
 # - Time handling uses a single timezone source to prevent subtle mismatches.
 # - Input normalization happens before validation so common user formats work.
+#
+# Important Streamlit UX note:
+# - Widgets inside `st.form(...)` do NOT rerun on each keystroke; changes apply on submit.
+#   Therefore, anything that must react immediately (e.g., SLA info, live char counter)
+#   must be rendered OUTSIDE the form.
 # ============================================================================
 
 # ============================================================================
@@ -216,11 +221,13 @@ def safe_localize(dt_naive: datetime) -> datetime:
 
 
 def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
-    """Calculate expected resolution time based on SLA."""
+    """Calculate expected resolution time based on SLA.
+
+    Why: must be deterministic and based on stored data (importance argument),
+    not on UI state (session_state), otherwise dashboards/admin views break.
+    """
     created_dt = iso_to_dt(created_at_iso)
-    sla_hours = SLA_HOURS_BY_IMPORTANCE[
-        st.session_state["importance_level"]
-    ]
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(importance))
     if created_dt is None or sla_hours is None:
         return None
     return created_dt + timedelta(hours=int(sla_hours))
@@ -902,7 +909,12 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 # APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Display issue submission form with validation and confirmation."""
+    """Display issue submission form with validation and confirmation.
+
+    SLA + character counter update immediately by design:
+    - Priority selectbox and description text_area are OUTSIDE the form.
+    - The submit button only submits, but those widgets still rerun live.
+    """
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
 
@@ -911,52 +923,68 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         "You will receive a confirmation email with SLA details after submitting."
     )
 
+    # ---- Immediate SLA feedback (must be outside form)
+    st.subheader("📋 Issue Details")
+
+    if "issue_priority" not in st.session_state:
+        st.session_state["issue_priority"] = "Low"
+
+    importance = st.selectbox(
+        "Priority Level*",
+        options=IMPORTANCE_LEVELS,
+        key="issue_priority",
+        help="Used to determine the SLA target handling time.",
+    )
+
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+    if sla_hours is not None:
+        st.info(f"**SLA Target:** Resolution within {sla_hours} hours")
+
+    # ---- Immediate character counter (must be outside form)
+    user_comment = st.text_area(
+        "Problem Description*",
+        max_chars=500,
+        placeholder="What happened? Where exactly? Since when? Any impact?",
+        height=120,
+        key="issue_description",
+    ).strip()
+
+    st.caption(f"{len(user_comment)}/500 characters")
+
+    # ---- Remaining inputs in a form (submitted atomically)
     with st.form("issue_form", clear_on_submit=True):
         st.subheader("👤 Your Information")
         col1, col2 = st.columns(2)
 
         with col1:
-            name = st.text_input("Name*", placeholder="e.g., Max Muster").strip()
+            name = st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name").strip()
 
         with col2:
             hsg_email = st.text_input(
                 "Email Address*",
                 placeholder="firstname.lastname@student.unisg.ch",
+                key="issue_email",
             ).strip()
             st.caption("Must be @unisg.ch or @student.unisg.ch")
 
-        st.subheader("📋 Issue Details")
         col3, col4 = st.columns(2)
 
         with col3:
-            room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001").strip()
-            # Micro-UX: show helpful normalization preview (reduces validation frustration).
+            room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
             if room_number_input:
                 normalized = normalize_room(room_number_input)
                 if normalized != room_number_input:
                     st.caption(f"Will be saved as: **{normalized}**")
 
         with col4:
-            issue_type = st.selectbox("Issue Type*", ISSUE_TYPES)
-
-        importance = st.selectbox("Priority Level*", IMPORTANCE_LEVELS)
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
-        if sla_hours is not None:
-            st.info(f"**SLA Target:** Resolution within {sla_hours} hours")
-
-        user_comment = st.text_area(
-            "Problem Description*",
-            max_chars=500,
-            placeholder=("What happened? Where exactly? Since when? Any impact?"),
-            height=120,
-        ).strip()
-        st.caption(f"Please limit your description to 500 characters.")
+            issue_type = st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
 
         st.subheader("📸 Optional Photo Upload")
         uploaded_file = st.file_uploader(
             "Upload a photo to help us understand the issue better",
             type=["jpg", "jpeg", "png"],
             help="Tip: avoid personal data in the photo where possible.",
+            key="issue_photo",
         )
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded photo preview", use_container_width=True)
@@ -1034,8 +1062,7 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Keep the underlying full description out of the table (reduces clutter)
-    if "user_comment" in display_df.columns:
-        display_df = display_df.drop(columns=["user_comment"], errors="ignore")
+    display_df = display_df.drop(columns=["user_comment"], errors="ignore")
 
     return display_df
 
@@ -1182,14 +1209,12 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.info("No issues match the selected filters.")
         return
 
-    filtered_df["expected_resolved_at"] = filtered_df.apply(
-        lambda r: (
-            expected_resolution_dt(str(r["created_at"]), str(r["importance"])).isoformat(timespec="seconds")
-            if expected_resolution_dt(str(r["created_at"]), str(r["importance"])) is not None
-            else None
-        ),
-        axis=1,
-    )
+    # Compute SLA target once per row (fast + avoids accidental double work)
+    def _sla_target_row(r: pd.Series) -> str | None:
+        dt_target = expected_resolution_dt(str(r.get("created_at", "")), str(r.get("importance", "")))
+        return dt_target.isoformat(timespec="seconds") if dt_target is not None else None
+
+    filtered_df["expected_resolved_at"] = filtered_df.apply(_sla_target_row, axis=1)
 
     resolved_df = filtered_df[filtered_df["status"] == "Resolved"].copy()
     if not resolved_df.empty and "created_at" in resolved_df.columns and "resolved_at" in resolved_df.columns:
@@ -1802,7 +1827,9 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             open_issues_df = issues[issues["status"] != "Resolved"]
             if not open_issues_df.empty:
                 st.write(f"**Open Issues ({len(open_issues_df)}):**")
-                display_open = open_issues_df[["id", "issue_type", "room_number", "importance", "status", "created_at"]].copy()
+                display_open = open_issues_df[
+                    ["id", "issue_type", "room_number", "importance", "status", "created_at"]
+                ].copy()
                 display_open = display_open.rename(
                     columns={
                         "id": "ID",
@@ -1824,6 +1851,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             with col_stat2:
                 created_dt = pd.to_datetime(issues.get("created_at"), errors="coerce")
                 if created_dt.notna().any():
+                    # Works if created_at contains timezone offset (it does in this app).
                     avg_age_days = (now_zurich() - created_dt).dt.days.mean()
                     st.metric("Avg. Issue Age", f"{avg_age_days:.1f} days")
                 else:
@@ -1911,7 +1939,11 @@ def main() -> None:
         current_page = "Overview Dashboard"
 
     try:
-        st.image("campus_header.jpeg", caption="Campus of the University of St.Gallen (HSG), St.Gallen, Switzerland", use_container_width=True)
+        st.image(
+            "campus_header.jpeg",
+            caption="Campus of the University of St.Gallen (HSG), St.Gallen, Switzerland",
+            use_container_width=True,
+        )
     except FileNotFoundError:
         st.caption("Reporting Tool @ HSG")
 
@@ -1972,7 +2004,11 @@ if __name__ == "__main__":
         )
 
         # In debug mode, show full stacktrace to speed up fixing (avoid in production).
-        if get_config().debug:
-            import traceback
+        try:
+            if get_config().debug:
+                import traceback
 
-            st.code(traceback.format_exc(), language="python")
+                st.code(traceback.format_exc(), language="python")
+        except Exception:
+            # If secrets/config caused the crash, avoid crashing again while rendering debug output.
+            pass
