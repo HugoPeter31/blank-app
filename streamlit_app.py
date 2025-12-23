@@ -18,6 +18,21 @@ from __future__ import annotations
 # - Widgets inside `st.form(...)` do NOT rerun on each keystroke; changes apply on submit.
 #   Therefore, anything that must react immediately (e.g., SLA info, live char counter)
 #   must be rendered OUTSIDE the form.
+#
+# Change applied (requested):
+# - Submission form order is now EXACTLY:
+#   1) Your information
+#   2) Issue details
+#   3) Priority level
+#   4) Problem description
+#   5) Optional photo upload
+#   6) Map
+#   7) Submit button
+#
+# Implementation note:
+# - To guarantee the exact visual order *and* keep SLA + char counter live,
+#   the submission page no longer uses `st.form(...)`. We validate + submit only
+#   when the user clicks the submit button.
 # ============================================================================
 
 # ============================================================================
@@ -274,7 +289,6 @@ def validate_submission_input(sub: Submission) -> list[str]:
     elif not valid_email(sub.hsg_email):
         errors.append("Invalid email address. Use …@unisg.ch or …@student.unisg.ch.")
 
-    # Validate normalized room to accept common user input formats.
     if not sub.room_number.strip():
         errors.append("Room number is required.")
     elif not valid_room_number(sub.room_number):
@@ -306,11 +320,7 @@ def validate_admin_email(email: str) -> list[str]:
 # ============================================================================
 @st.cache_resource
 def get_connection() -> sqlite3.Connection:
-    """Create and cache SQLite database connection.
-
-    Streamlit reruns on every interaction; caching avoids opening new DB connections
-    repeatedly, improving performance and stability.
-    """
+    """Create and cache SQLite database connection."""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
@@ -403,7 +413,6 @@ def migrate_db(con: sqlite3.Connection) -> None:
         if "resolved_at" not in cols:
             con.execute("ALTER TABLE submissions ADD COLUMN resolved_at TEXT")
 
-        # Ensure audit tables exist (safe no-op if already there)
         con.execute("""
             CREATE TABLE IF NOT EXISTS status_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -517,11 +526,7 @@ def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
 # BOOKING SYSTEM FUNCTIONS
 # ============================================================================
 def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
-    """Update asset statuses based on active bookings.
-
-    We rebuild "available/booked" from bookings to keep the assets table derived,
-    preventing drift (e.g., manual edits or partial failures).
-    """
+    """Update asset statuses based on active bookings."""
     now_iso = now_zurich().isoformat(timespec="seconds")
 
     with con:
@@ -675,11 +680,7 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
 # EMAIL FUNCTIONS
 # ============================================================================
 def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> tuple[bool, str]:
-    """Send email with proper error handling.
-
-    We return a user-friendly message so the UI can stay helpful without leaking
-    sensitive SMTP details unless debug is explicitly enabled.
-    """
+    """Send email with proper error handling."""
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = config.from_email
@@ -692,7 +693,6 @@ def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> 
 
     try:
         with smtplib.SMTP(config.smtp_server, config.smtp_port, timeout=10) as smtp:
-            # `ehlo()` improves compatibility with certain SMTP servers and helps TLS negotiation.
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
@@ -895,10 +895,7 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str:
-    """Create a stable preview for long text fields in tables.
-
-    Tables should support quick scanning; full details are shown in the detail panel.
-    """
+    """Create a stable preview for long text fields in tables."""
     text = (value or "").strip()
     if len(text) <= max_chars:
         return text
@@ -909,17 +906,7 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 # APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Display issue submission form with validation and confirmation.
-
-    Change requested:
-    - Order in Reporting Tool is now:
-      1) Your Information
-      2) Issue Details
-      3) Optional Photo Upload
-    - SLA + character counter still update immediately:
-      We keep "Issue Details" widgets (priority + description) outside the form,
-      but we *render* the "Your Information" section first inside the form.
-    """
+    """Display issue submission page (exact order as requested)."""
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
 
@@ -928,94 +915,90 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         "You will receive a confirmation email with SLA details after submitting."
     )
 
-    # ---- SECTION 1: Your Information (inside form, rendered first)
-    with st.form("issue_form", clear_on_submit=True):
-        st.subheader("👤 Your Information")
-        col1, col2 = st.columns(2)
+    # Ensure stable defaults (prevents KeyErrors on first render)
+    st.session_state.setdefault("issue_name", "")
+    st.session_state.setdefault("issue_email", "")
+    st.session_state.setdefault("issue_room", "")
+    st.session_state.setdefault("issue_type", ISSUE_TYPES[0])
+    st.session_state.setdefault("issue_priority", "Low")
+    st.session_state.setdefault("issue_description", "")
 
-        with col1:
-            name = st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name").strip()
-
-        with col2:
-            hsg_email = st.text_input(
-                "Email Address*",
-                placeholder="firstname.lastname@student.unisg.ch",
-                key="issue_email",
-            ).strip()
-            st.caption("Must be @unisg.ch or @student.unisg.ch")
-
-        # ---- SECTION 2: Issue Details (rendered second; priority+description stored via session_state)
-        st.subheader("📋 Issue Details")
-
-        col3, col4 = st.columns(2)
-        with col3:
-            room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
-            if room_number_input:
-                normalized = normalize_room(room_number_input)
-                if normalized != room_number_input:
-                    st.caption(f"Will be saved as: **{normalized}**")
-
-        with col4:
-            issue_type = st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
-
-        # Priority + description widgets MUST stay outside st.form to update live,
-        # so we "mirror" them here using session_state values and a small hint.
-        st.caption(
-            "Priority level and description are shown below (live updates). "
-            "Please set them before submitting."
+    # 1) Your information
+    st.subheader("👤 Your Information")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
+    with col2:
+        st.text_input(
+            "Email Address*",
+            placeholder="firstname.lastname@student.unisg.ch",
+            key="issue_email",
         )
+        st.caption("Must be @unisg.ch or @student.unisg.ch")
 
-        # ---- SECTION 3: Optional Photo Upload (rendered third)
-        st.subheader("📸 Optional Photo Upload")
-        uploaded_file = st.file_uploader(
-            "Upload a photo to help us understand the issue better",
-            type=["jpg", "jpeg", "png"],
-            help="Tip: avoid personal data in the photo where possible.",
-            key="issue_photo",
-        )
-        if uploaded_file is not None:
-            st.image(uploaded_file, caption="Uploaded photo preview", use_container_width=True)
+    # 2) Issue detail
+    st.subheader("📋 Issue Details")
+    col3, col4 = st.columns(2)
+    with col3:
+        room_number_input = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
+        if room_number_input:
+            normalized = normalize_room(room_number_input)
+            if normalized != room_number_input:
+                st.caption(f"Will be saved as: **{normalized}**")
 
-        render_map_iframe()
+    with col4:
+        st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
 
-        submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
-
-    # ---- Live widgets OUTSIDE the form (keeps SLA + char counter reactive)
-    # Render these after the form, but they still conceptually belong to "Issue Details".
-    if "issue_priority" not in st.session_state:
-        st.session_state["issue_priority"] = "Low"
-
-    importance = st.selectbox(
+    # 3) Priority level (live SLA)
+    st.subheader("🚦 Priority Level")
+    st.selectbox(
         "Priority Level*",
         options=IMPORTANCE_LEVELS,
         key="issue_priority",
         help="Used to determine the SLA target handling time.",
     )
 
-    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
     if sla_hours is not None:
         st.info(f"**SLA Target:** Resolution within {sla_hours} hours")
 
-    user_comment = st.text_area(
+    # 4) Problem description (live char counter)
+    st.subheader("🧾 Problem Description")
+    desc = st.text_area(
         "Problem Description*",
         max_chars=500,
         placeholder="What happened? Where exactly? Since when? Any impact?",
         height=120,
         key="issue_description",
     ).strip()
+    st.caption(f"{len(desc)}/500 characters")
 
-    st.caption(f"{len(user_comment)}/500 characters")
+    # 5) Optional photo upload
+    st.subheader("📸 Optional Photo Upload")
+    uploaded_file = st.file_uploader(
+        "Upload a photo to help us understand the issue better",
+        type=["jpg", "jpeg", "png"],
+        help="Tip: avoid personal data in the photo where possible.",
+        key="issue_photo",
+    )
+    if uploaded_file is not None:
+        st.image(uploaded_file, caption="Uploaded photo preview", use_container_width=True)
 
+    # 6) Map
+    render_map_iframe()
+
+    # 7) Submit button (last)
+    submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
     if not submitted:
         return
 
     sub = Submission(
-        name=name,
-        hsg_email=hsg_email.strip().lower(),
-        issue_type=issue_type,
-        room_number=normalize_room(room_number_input),
-        importance=importance,
-        user_comment=user_comment,
+        name=str(st.session_state["issue_name"]).strip(),
+        hsg_email=str(st.session_state["issue_email"]).strip().lower(),
+        issue_type=str(st.session_state["issue_type"]),
+        room_number=normalize_room(str(st.session_state["issue_room"])),
+        importance=str(st.session_state["issue_priority"]),
+        user_comment=str(st.session_state["issue_description"]).strip(),
     )
 
     errors = validate_submission_input(sub)
@@ -1039,12 +1022,15 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     else:
         st.warning(f"Note: {msg}")
 
+    # Clear user inputs after a successful submit (keeps reruns clean and avoids double submissions).
+    for k in ["issue_name", "issue_email", "issue_room", "issue_type", "issue_priority", "issue_description", "issue_photo"]:
+        if k in st.session_state:
+            del st.session_state[k]
+
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
     """Format submissions data for user-friendly display."""
     display_df = df.copy()
-
-    # Preview columns (keeps table scannable; details panel shows full text)
     display_df["user_comment_preview"] = display_df["user_comment"].astype(str).apply(truncate_text)
 
     display_df = display_df.rename(
@@ -1065,7 +1051,6 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
-    # Sort by priority (High first) and recency
     importance_order = {"High": 0, "Medium": 1, "Low": 2}
     display_df["_priority_rank"] = display_df["Priority"].map(importance_order).fillna(99).astype(int)
 
@@ -1074,9 +1059,7 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
         .drop(columns=["_priority_rank"])
     )
 
-    # Keep the underlying full description out of the table (reduces clutter)
     display_df = display_df.drop(columns=["user_comment"], errors="ignore")
-
     return display_df
 
 
@@ -1637,7 +1620,6 @@ def page_assets(con: sqlite3.Connection) -> None:
                 with con:
                     con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
 
-                # ✅ Requested change: explicit confirmation message on successful move submission
                 st.success(
                     "✅ Move request submitted successfully!\n\n"
                     f"**Asset:** {selected_asset['asset_name']}\n"
