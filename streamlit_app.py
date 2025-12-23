@@ -31,8 +31,6 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from typing import Iterable
 
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import pandas as pd
 import pytz
 import smtplib
@@ -1355,97 +1353,169 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_charts(df: pd.DataFrame) -> None:
-    """Generate data visualization charts for issue analytics.
-    
-    Args:
-        df: Submissions DataFrame to visualize
-    """
+    """Generate interactive analytics charts (Plotly-only for consistent UI)."""
     if df.empty:
         st.info("No data available for charts.")
         return
-    
+
+    # Ensure datetime parsing once (robust + avoids repeated conversions)
+    df_local = df.copy()
+    df_local["created_at_dt"] = pd.to_datetime(df_local.get("created_at"), errors="coerce")
+
     # Create tabs for different chart types
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Issue Types", 
-        "📅 Daily Trends", 
+        "📊 Issue Types",
+        "📅 Daily Trends",
         "🎯 Priority Levels",
-        "📈 Status Distribution"
+        "📈 Status Distribution",
     ])
-    
+
+    base_layout = dict(
+        template="plotly_white",
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=420,
+    )
+
     with tab1:
         st.subheader("Issues by Type")
-        issue_counts = df["issue_type"].value_counts().reindex(ISSUE_TYPES, fill_value=0)
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.barh(issue_counts.index, issue_counts.values, color=HSG_GREEN)
-        ax.set_xlabel("Number of Issues")
-        ax.set_title("Issue Frequency by Type", fontweight="bold")
-        st.pyplot(fig)
-    
+
+        issue_counts = (
+            df_local["issue_type"]
+            .value_counts()
+            .reindex(ISSUE_TYPES, fill_value=0)
+        )
+
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=issue_counts.values,
+                    y=issue_counts.index,
+                    orientation="h",
+                    marker=dict(color=HSG_GREEN),
+                    hovertemplate="Issues: %{x}<extra></extra>",
+                )
+            ]
+        )
+        fig.update_layout(
+            **base_layout,
+            title="Issue Frequency by Type",
+            xaxis_title="Number of Issues",
+            yaxis_title="Issue Type",
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
     with tab2:
         st.subheader("Submission Trends")
-        df_dates = df.copy()
-        df_dates["created_at"] = pd.to_datetime(df_dates["created_at"], errors="coerce")
-        df_dates = df_dates.dropna(subset=["created_at"])
-        
+
+        df_dates = df_local.dropna(subset=["created_at_dt"]).copy()
         if df_dates.empty:
             st.info("No valid submission dates available.")
         else:
+            df_dates["date"] = df_dates["created_at_dt"].dt.date
             date_range = pd.date_range(
-                start=df_dates["created_at"].min().date(),
-                end=df_dates["created_at"].max().date(),
+                start=df_dates["created_at_dt"].min().date(),
+                end=df_dates["created_at_dt"].max().date(),
                 freq="D",
             )
-            daily_counts = df_dates.groupby(df_dates["created_at"].dt.date).size()
+
+            daily_counts = df_dates.groupby("date").size()
             daily_counts = daily_counts.reindex(date_range.date, fill_value=0)
-            
-            fig, ax = plt.subplots(figsize=(12, 5))
-            ax.plot(date_range, daily_counts.values, marker="o", color=HSG_GREEN, linewidth=2)
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-            ax.set_xlabel("Date")
-            ax.set_ylabel("Issues Submitted")
-            ax.set_title("Daily Submission Trends", fontweight="bold")
-            ax.grid(True, linestyle="--", alpha=0.3)
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
-    
+
+            fig = go.Figure(
+                data=[
+                    go.Scatter(
+                        x=date_range,
+                        y=daily_counts.values,
+                        mode="lines+markers",
+                        line=dict(color=HSG_GREEN),
+                        hovertemplate="%{x|%Y-%m-%d}<br>Issues: %{y}<extra></extra>",
+                    )
+                ]
+            )
+            fig.update_layout(
+                **base_layout,
+                title="Daily Submission Trends",
+                xaxis_title="Date",
+                yaxis_title="Issues Submitted",
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
     with tab3:
         st.subheader("Priority Distribution")
-        imp_counts = df["importance"].value_counts().reindex(IMPORTANCE_LEVELS, fill_value=0)
-        colors = ["#ff6b6b", "#ffd93d", "#6bcf7f"]  # Red, Yellow, Green
-        
-        fig, ax = plt.subplots(figsize=(8, 6))
-        bars = ax.bar(imp_counts.index, imp_counts.values, color=colors)
-        ax.set_xlabel("Priority Level")
-        ax.set_ylabel("Number of Issues")
-        ax.set_title("Issues by Priority Level", fontweight="bold")
-        
-        # Add value labels on bars
-        for bar in bars:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                   f'{int(height)}', ha='center', va='bottom')
-        
-        st.pyplot(fig)
-    
+
+        imp_counts = (
+            df_local["importance"]
+            .value_counts()
+            .reindex(IMPORTANCE_LEVELS, fill_value=0)
+        )
+
+        # Keep meaningful priority colors, but still consistent in Plotly UI
+        priority_colors = {
+            "High": "#ff6b6b",
+            "Medium": "#ffd93d",
+            "Low": "#6bcf7f",
+        }
+
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=imp_counts.index,
+                    y=imp_counts.values,
+                    marker=dict(color=[priority_colors.get(i, HSG_GREEN) for i in imp_counts.index]),
+                    text=imp_counts.values,
+                    textposition="auto",
+                    hovertemplate="Count: %{y}<extra></extra>",
+                )
+            ]
+        )
+        fig.update_layout(
+            **base_layout,
+            title="Issues by Priority Level",
+            xaxis_title="Priority Level",
+            yaxis_title="Number of Issues",
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
     with tab4:
         st.subheader("Status Overview")
-        status_counts = df["status"].value_counts().reindex(STATUS_LEVELS, fill_value=0)
-        
+
+        status_counts = (
+            df_local["status"]
+            .value_counts()
+            .reindex(STATUS_LEVELS, fill_value=0)
+        )
+
         if status_counts.sum() == 0:
             st.info("No status data available.")
         else:
-            colors = ["#ff6b6b", "#ffd93d", "#6bcf7f"]  # Pending, In Progress, Resolved
-            fig, ax = plt.subplots(figsize=(8, 8))
-            wedges, texts, autotexts = ax.pie(
-                status_counts.values, 
-                labels=status_counts.index,
-                autopct='%1.1f%%',
-                startangle=90,
-                colors=colors,
-                textprops={'fontsize': 12}
+            status_colors = {
+                "Pending": "#ff6b6b",
+                "In Progress": "#ffd93d",
+                "Resolved": "#6bcf7f",
+            }
+
+            fig = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=status_counts.index,
+                        values=status_counts.values,
+                        hole=0.35,
+                        marker=dict(colors=[status_colors.get(s, HSG_GREEN) for s in status_counts.index]),
+                        textinfo="percent+label",
+                        hovertemplate="%{label}<br>%{value} issues<extra></extra>",
+                    )
+                ]
             )
-            ax.set_title("Issue Status Distribution", fontweight="bold", fontsize=14)
-            st.pyplot(fig)
+            fig.update_layout(
+                **base_layout,
+                title="Issue Status Distribution",
+                height=460,
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
 
 
 def page_submitted_issues(con: sqlite3.Connection) -> None:
