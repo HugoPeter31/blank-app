@@ -948,7 +948,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             placeholder=("What happened? Where exactly? Since when? Any impact?"),
             height=120,
         ).strip()
-        st.caption(f"Limited to 500 characters")
+        st.caption(f"Please limit your description to 500 characters.")
 
         st.subheader("📸 Optional Photo Upload")
         uploaded_file = st.file_uploader(
