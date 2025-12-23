@@ -901,6 +901,16 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
         return text
     return text[: max_chars - 1] + "…"
 
+def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
+    """Create a visually grouped container with a subtle border.
+
+    Why:
+    - Improves visual hierarchy without custom CSS
+    - Makes the form feel like a card / panel
+    - Streamlit-native (robust for grading & deployment)
+    """
+    return st.container(border=True, key=key)
+
 
 # ============================================================================
 # APPLICATION PAGES
