@@ -945,7 +945,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         user_comment = st.text_area(
             "Problem Description*",
             max_chars=500,
-            placeholder=("What happened? Where exactly? Since when? Any impact?),
+            placeholder=("What happened? Where exactly? Since when? Any impact?"),
             height=120,
         ).strip()
         st.caption(f"Character count: {len(user_comment)}/500")
