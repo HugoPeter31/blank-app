@@ -902,7 +902,7 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Display issue submission form with validation and confirmation."""
     st.header("📝 Report a Facility Issue")
-    st.caption("Fields marked with * are mandatory. All times are Europe/Zurich.")
+    st.caption("Fields marked with * are mandatory.")
 
     st.info(
         "Use this form to report facility-related issues. "
