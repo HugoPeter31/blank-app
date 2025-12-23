@@ -456,11 +456,16 @@ def migrate_db(con: sqlite3.Connection) -> None:
     # Add missing columns with safe defaults
     if "created_at" not in cols:
         con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
-        con.execute("UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
+        now_iso = now_zurich_str()
+        con.execute("UPDATE submissions SET created_at = ? WHERE created_at IS NULL", (now_iso,))
+        con.execute("UPDATE submissions SET updated_at = ? WHERE updated_at IS NULL", (now_iso,))
     
     if "updated_at" not in cols:
         con.execute("ALTER TABLE submissions ADD COLUMN updated_at TEXT")
-        con.execute("UPDATE submissions SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+        now_iso = now_zurich_str()
+        con.execute("UPDATE submissions SET created_at = ? WHERE created_at IS NULL", (now_iso,))
+        con.execute("UPDATE submissions SET updated_at = ? WHERE updated_at IS NULL", (now_iso,))
+
     
     if "assigned_to" not in cols:
         con.execute("ALTER TABLE submissions ADD COLUMN assigned_to TEXT")
@@ -723,7 +728,7 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
     Returns:
         DataFrame of future bookings ordered by start time
     """
-    now_iso = now_zurich().isoformat()
+    now_iso = now_zurich().isoformat(timespec="seconds")
     return pd.read_sql(
         """
         SELECT user_name, start_time, end_time
@@ -1591,7 +1596,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         df["status"].isin(status_filter) &
         df["importance"].isin(importance_filter) &
         df["issue_type"].isin(issue_type_filter)
-    ]
+    ].copy()
     
     if filtered_df.empty:
         st.info("No issues match the selected filters.")
