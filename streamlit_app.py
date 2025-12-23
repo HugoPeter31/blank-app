@@ -1874,7 +1874,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
 def main() -> None:
     """Main application entry point."""
     st.set_page_config(
-        page_title="Reporting Tool @ HSG",
+        page_title="Reporting Tool@HSG",
         page_icon="🏛️",
         layout="centered",
         initial_sidebar_state="expanded",
