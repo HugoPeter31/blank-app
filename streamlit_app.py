@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # ============================================================================
-# HSG REPORTING TOOL - ENHANCED ASSET MANAGEMENT
+# HSG REPORTING TOOL
 # ============================================================================
 # Application: Streamlit-based reporting system for University of St. Gallen
 # Purpose: Facility issue reporting, asset booking, and tracking system
@@ -11,8 +11,8 @@ from __future__ import annotations
 # 1. Issue reporting form with email confirmation and SLA tracking
 # 2. Dashboard with data visualization and CSV export
 # 3. Admin panel with password protection and status management
-# 4. Asset booking system with intelligent room-asset linking ✓ ENHANCED
-# 5. Asset tracking with location-based management ✓ ENHANCED
+# 4. Asset booking system with intelligent room-asset linking
+# 5. Asset tracking with location-based management
 # 
 # Security Notes:
 # - Admin access protected via Streamlit secrets (ADMIN_PASSWORD)
@@ -31,12 +31,12 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from typing import Iterable
 
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytz
 import smtplib
 import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 
 # ============================================================================
@@ -77,7 +77,8 @@ SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")  # Only HSG emails allowed
 ROOM_PATTERN = re.compile(r"^[A-Z]\s?\d{2}-\d{3}$")           # Standard HSG room format
 
-# Enhanced location mapping for asset tracking with coordinates for visualization
+# Location mapping for asset tracking
+# In production, this could be replaced with a database table or API integration
 LOCATIONS = {
     "R_A_09001": {"label": "Room A 09-001", "x": 10, "y": 20, "floor": "09", "building": "A", "type": "room"},
     "H_A_09001": {"label": "Hallway near Room A 09-001", "x": 15, "y": 25, "floor": "09", "building": "A", "type": "hallway"},
@@ -151,11 +152,23 @@ class Submission:
 # SECRETS MANAGEMENT (Streamlit Cloud Secrets)
 # ============================================================================
 def get_secret(key: str, default: str | None = None) -> str:
-    """Safely retrieve a secret from Streamlit secrets configuration."""
+    """Safely retrieve a secret from Streamlit secrets configuration.
+    
+    Args:
+        key: The secret key to retrieve
+        default: Optional default value if key doesn't exist
+        
+    Returns:
+        The secret value as a string
+        
+    Raises:
+        SystemExit: If secret is required but missing
+    """
     if key in st.secrets:
         return str(st.secrets[key])
     if default is not None:
         return default
+    # Critical failure: missing required secret
     st.error(f"Missing Streamlit secret: {key}")
     st.stop()
 
@@ -188,17 +201,32 @@ REPORT_HOUR = int(get_secret("REPORT_HOUR", "7"))        # Hour in 24h format
 # TIME HELPER FUNCTIONS
 # ============================================================================
 def now_zurich() -> datetime:
-    """Get current time in Zurich timezone."""
+    """Get current time in Zurich timezone.
+    
+    Returns:
+        Timezone-aware datetime object for Zurich
+    """
     return datetime.now(APP_TZ)
 
 
 def now_zurich_str() -> str:
-    """Get current Zurich time as ISO 8601 string."""
+    """Get current Zurich time as ISO 8601 string.
+    
+    Returns:
+        ISO formatted timestamp with timezone (e.g., "2024-01-15T14:30:00+01:00")
+    """
     return now_zurich().isoformat(timespec="seconds")
 
 
 def iso_to_dt(value: str) -> datetime | None:
-    """Safely convert ISO string to datetime object."""
+    """Safely convert ISO string to datetime object.
+    
+    Args:
+        value: ISO 8601 formatted datetime string
+        
+    Returns:
+        datetime object or None if conversion fails
+    """
     try:
         return datetime.fromisoformat(value)
     except (TypeError, ValueError):
@@ -207,7 +235,15 @@ def iso_to_dt(value: str) -> datetime | None:
 
 
 def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
-    """Calculate expected resolution time based on SLA."""
+    """Calculate expected resolution time based on SLA.
+    
+    Args:
+        created_at_iso: Issue creation timestamp
+        importance: Priority level (High/Medium/Low)
+        
+    Returns:
+        Expected resolution datetime or None if inputs are invalid
+    """
     created_dt = iso_to_dt(created_at_iso)
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
     
@@ -218,7 +254,14 @@ def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | N
 
 
 def is_room_location(location_id: str) -> bool:
-    """Check if a location ID represents a room."""
+    """Check if a location ID represents a room.
+    
+    Args:
+        location_id: Location identifier
+        
+    Returns:
+        True if location is a room (starts with "R_"), False otherwise
+    """
     return str(location_id).startswith("R_")
 
 
@@ -241,25 +284,57 @@ def format_duration(minutes: int) -> str:
 # VALIDATION FUNCTIONS
 # ============================================================================
 def valid_email(hsg_email: str) -> bool:
-    """Validate HSG email address format."""
+    """Validate HSG email address format.
+    
+    Args:
+        hsg_email: Email address to validate
+        
+    Returns:
+        True if email matches HSG pattern (@unisg.ch or @student.unisg.ch)
+    """
     return bool(EMAIL_PATTERN.fullmatch(hsg_email.strip()))
 
 
 def valid_room_number(room_number: str) -> bool:
-    """Validate HSG room number format."""
+    """Validate HSG room number format.
+    
+    Args:
+        room_number: Room number to validate
+        
+    Returns:
+        True if room number matches pattern (e.g., "A 09-001")
+    """
     return bool(ROOM_PATTERN.fullmatch(room_number.strip()))
 
 
 def normalize_room(room_number: str) -> str:
-    """Normalize room number to canonical format."""
+    """Normalize room number to canonical format.
+    
+    Converts various inputs like "A09-001" or "A  09-001" to "A 09-001".
+    
+    Args:
+        room_number: Raw room number input
+        
+    Returns:
+        Standardized room number string
+    """
     raw = room_number.strip().upper()
+    # Insert space after letter if missing (A09-001 → A 09-001)
     raw = re.sub(r"^([A-Z])(\d{2}-\d{3})$", r"\1 \2", raw)
+    # Collapse multiple spaces to single space
     raw = re.sub(r"\s+", " ", raw)
     return raw
 
 
 def validate_submission_input(sub: Submission) -> list[str]:
-    """Validate all inputs for issue submission."""
+    """Validate all inputs for issue submission.
+    
+    Args:
+        sub: Submission data object
+        
+    Returns:
+        List of error messages, empty if validation passes
+    """
     errors: list[str] = []
 
     if not sub.name.strip():
@@ -288,7 +363,14 @@ def validate_submission_input(sub: Submission) -> list[str]:
 
 
 def validate_admin_email(email: str) -> list[str]:
-    """Validate email for admin-triggered notifications."""
+    """Validate email for admin-triggered notifications.
+    
+    Args:
+        email: Email address to validate
+        
+    Returns:
+        List of error messages, empty if validation passes
+    """
     if not email.strip():
         return ["Email address is required."]
     if not valid_email(email):
@@ -301,12 +383,27 @@ def validate_admin_email(email: str) -> list[str]:
 # ============================================================================
 @st.cache_resource
 def get_connection() -> sqlite3.Connection:
-    """Create and cache SQLite database connection."""
+    """Create and cache SQLite database connection.
+    
+    Caching prevents opening new connections on every Streamlit rerun,
+    improving performance and preventing connection exhaustion.
+    
+    Returns:
+        SQLite connection object
+    """
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def init_db(con: sqlite3.Connection) -> None:
-    """Initialize core database tables for issue reporting."""
+    """Initialize core database tables for issue reporting.
+    
+    Creates tables if they don't exist. This is idempotent and safe to run
+    multiple times.
+    
+    Args:
+        con: Active database connection
+    """
+    # Main submissions table - stores all reported issues
     con.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,6 +421,7 @@ def init_db(con: sqlite3.Connection) -> None:
         )
     """)
     
+    # Audit log for status changes - provides traceability
     con.execute("""
         CREATE TABLE IF NOT EXISTS status_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -335,6 +433,7 @@ def init_db(con: sqlite3.Connection) -> None:
         )
     """)
     
+    # Report sending log - prevents duplicate automated reports
     con.execute("""
         CREATE TABLE IF NOT EXISTS report_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -347,7 +446,13 @@ def init_db(con: sqlite3.Connection) -> None:
 
 
 def init_booking_table(con: sqlite3.Connection) -> None:
-    """Initialize booking system tables."""
+    """Initialize booking system tables.
+    
+    Separate from issue reporting to maintain modularity.
+    
+    Args:
+        con: Active database connection
+    """
     con.execute("""
         CREATE TABLE IF NOT EXISTS bookings (
             booking_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -364,7 +469,11 @@ def init_booking_table(con: sqlite3.Connection) -> None:
 
 
 def init_assets_table(con: sqlite3.Connection) -> None:
-    """Initialize assets table for both booking and tracking."""
+    """Initialize assets table for both booking and tracking.
+    
+    Args:
+        con: Active database connection
+    """
     con.execute("""
         CREATE TABLE IF NOT EXISTS assets (
             asset_id TEXT PRIMARY KEY,
@@ -380,9 +489,18 @@ def init_assets_table(con: sqlite3.Connection) -> None:
 
 
 def migrate_db(con: sqlite3.Connection) -> None:
-    """Apply schema migrations for backward compatibility."""
+    """Apply schema migrations for backward compatibility.
+    
+    Handles database upgrades by adding missing columns to existing tables.
+    This ensures the app works with older database versions.
+    
+    Args:
+        con: Active database connection
+    """
+    # Get existing columns in submissions table
     cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
     
+    # Add missing columns with safe defaults
     if "created_at" not in cols:
         con.execute("ALTER TABLE submissions ADD COLUMN created_at TEXT")
         con.execute("UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
@@ -401,24 +519,25 @@ def migrate_db(con: sqlite3.Connection) -> None:
     try:
         con.execute("ALTER TABLE bookings ADD COLUMN purpose TEXT")
     except:
-        pass
+        pass  # Column already exists
     
     try:
         con.execute("ALTER TABLE bookings ADD COLUMN participants INTEGER")
     except:
-        pass
+        pass  # Column already exists
     
     # Check and update assets table
     try:
         con.execute("ALTER TABLE assets ADD COLUMN last_moved TEXT")
     except:
-        pass
+        pass  # Column already exists
     
     try:
         con.execute("ALTER TABLE assets ADD COLUMN notes TEXT")
     except:
-        pass
+        pass  # Column already exists
     
+    # Ensure audit tables exist
     con.execute("""
         CREATE TABLE IF NOT EXISTS status_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -442,7 +561,14 @@ def migrate_db(con: sqlite3.Connection) -> None:
 
 
 def seed_assets(con: sqlite3.Connection) -> None:
-    """Populate database with enhanced demo assets."""
+    """Populate database with initial demo assets.
+    
+    Only inserts assets that don't already exist (idempotent).
+    
+    Args:
+        con: Active database connection
+    """
+    # Demo data representing typical HSG assets
     assets = [
         # Study Rooms
         ("STUDY_A", "Study Room A", "Study Room", "R_A_09001", "available", None, "Quiet study area with natural light"),
@@ -490,12 +616,26 @@ def seed_assets(con: sqlite3.Connection) -> None:
 
 
 def fetch_submissions(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve all issue submissions from database."""
+    """Retrieve all issue submissions from database.
+    
+    Args:
+        con: Active database connection
+        
+    Returns:
+        DataFrame containing all submissions
+    """
     return pd.read_sql("SELECT * FROM submissions", con)
 
 
 def fetch_status_log(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve status change audit log."""
+    """Retrieve status change audit log.
+    
+    Args:
+        con: Active database connection
+        
+    Returns:
+        DataFrame of status changes ordered by most recent
+    """
     return pd.read_sql(
         """
         SELECT submission_id, old_status, new_status, changed_at
@@ -507,7 +647,15 @@ def fetch_status_log(con: sqlite3.Connection) -> pd.DataFrame:
 
 
 def fetch_report_log(con: sqlite3.Connection, report_type: str) -> pd.DataFrame:
-    """Retrieve report sending history."""
+    """Retrieve report sending history.
+    
+    Args:
+        con: Active database connection
+        report_type: Type of report to filter by
+        
+    Returns:
+        DataFrame of report logs for specified type
+    """
     return pd.read_sql(
         """
         SELECT report_type, sent_at
@@ -521,7 +669,14 @@ def fetch_report_log(con: sqlite3.Connection, report_type: str) -> pd.DataFrame:
 
 
 def fetch_assets(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve all assets from database."""
+    """Retrieve all assets from database.
+    
+    Args:
+        con: Active database connection
+        
+    Returns:
+        DataFrame containing all assets
+    """
     return pd.read_sql(
         """
         SELECT asset_id, asset_name, asset_type, location_id, status, last_moved, notes
@@ -533,7 +688,18 @@ def fetch_assets(con: sqlite3.Connection) -> pd.DataFrame:
 
 
 def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list[str]:
-    """Retrieve asset IDs located inside a specific room."""
+    """Retrieve asset IDs located inside a specific room.
+    
+    Used for intelligent booking: when a room is booked, all assets
+    inside it are automatically marked as booked.
+    
+    Args:
+        con: Active database connection
+        room_location_id: Location ID of the room
+        
+    Returns:
+        List of asset IDs located in the room (excluding the room itself)
+    """
     rows = con.execute(
         """
         SELECT asset_id
@@ -549,7 +715,15 @@ def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list
 
 
 def fetch_assets_by_type(con: sqlite3.Connection, asset_type: str) -> pd.DataFrame:
-    """Retrieve assets filtered by type."""
+    """Retrieve assets filtered by type.
+    
+    Args:
+        con: Active database connection
+        asset_type: Type of asset to filter by
+        
+    Returns:
+        DataFrame containing filtered assets
+    """
     return pd.read_sql(
         """
         SELECT asset_id, asset_name, location_id, status
@@ -563,7 +737,15 @@ def fetch_assets_by_type(con: sqlite3.Connection, asset_type: str) -> pd.DataFra
 
 
 def fetch_assets_by_location(con: sqlite3.Connection, location_id: str) -> pd.DataFrame:
-    """Retrieve assets filtered by location."""
+    """Retrieve assets filtered by location.
+    
+    Args:
+        con: Active database connection
+        location_id: Location ID to filter by
+        
+    Returns:
+        DataFrame containing filtered assets
+    """
     return pd.read_sql(
         """
         SELECT asset_id, asset_name, asset_type, status
@@ -577,7 +759,14 @@ def fetch_assets_by_location(con: sqlite3.Connection, location_id: str) -> pd.Da
 
 
 def fetch_all_bookings(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve all bookings from database."""
+    """Retrieve all bookings from database.
+    
+    Args:
+        con: Active database connection
+        
+    Returns:
+        DataFrame containing all bookings
+    """
     return pd.read_sql(
         """
         SELECT b.*, a.asset_name, a.asset_type
@@ -590,7 +779,14 @@ def fetch_all_bookings(con: sqlite3.Connection) -> pd.DataFrame:
 
 
 def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
-    """Log that a report has been sent."""
+    """Log that a report has been sent.
+    
+    Prevents duplicate automated reports by tracking when they were last sent.
+    
+    Args:
+        con: Active database connection
+        report_type: Type of report that was sent
+    """
     con.execute(
         "INSERT INTO report_log (report_type, sent_at) VALUES (?, ?)",
         (report_type, now_zurich_str()),
@@ -602,7 +798,15 @@ def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
 # ENHANCED BOOKING SYSTEM FUNCTIONS
 # ============================================================================
 def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
-    """Update asset statuses based on active bookings with enhanced logic."""
+    """Update asset statuses based on active bookings.
+    
+    This is a core feature: when a room is booked, all assets inside
+    that room are automatically marked as booked. This prevents double-booking
+    and ensures consistency.
+    
+    Args:
+        con: Active database connection
+    """
     now_iso = now_zurich().isoformat(timespec="seconds")
     
     # Reset all assets to available
@@ -652,7 +856,17 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
 
 
 def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datetime, end_time: datetime) -> bool:
-    """Check if an asset is available during a specified time period."""
+    """Check if an asset is available during a specified time period.
+    
+    Args:
+        con: Active database connection
+        asset_id: ID of asset to check
+        start_time: Desired booking start time
+        end_time: Desired booking end time
+        
+    Returns:
+        True if asset is available (no overlapping bookings), False otherwise
+    """
     query = """
         SELECT COUNT(*) FROM bookings
         WHERE asset_id = ?
@@ -667,7 +881,15 @@ def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datet
 
 
 def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFrame:
-    """Retrieve upcoming bookings for a specific asset."""
+    """Retrieve upcoming bookings for a specific asset.
+    
+    Args:
+        con: Active database connection
+        asset_id: ID of asset to get bookings for
+        
+    Returns:
+        DataFrame of future bookings ordered by start time
+    """
     now_iso = now_zurich().isoformat()
     return pd.read_sql(
         """
@@ -683,7 +905,14 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
 
 
 def fetch_todays_bookings(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve today's bookings for calendar view."""
+    """Retrieve today's bookings for calendar view.
+    
+    Args:
+        con: Active database connection
+        
+    Returns:
+        DataFrame containing today's bookings
+    """
     today_start = now_zurich().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     
@@ -701,7 +930,15 @@ def fetch_todays_bookings(con: sqlite3.Connection) -> pd.DataFrame:
 
 
 def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | None:
-    """Find the next available time for a currently booked asset."""
+    """Find the next available time for a currently booked asset.
+    
+    Args:
+        con: Active database connection
+        asset_id: ID of asset to check
+        
+    Returns:
+        Next available datetime if currently booked, None if available now
+    """
     now_iso = now_zurich().isoformat(timespec="seconds")
     row = con.execute(
         """
@@ -719,41 +956,54 @@ def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | No
 
 
 def calculate_asset_utilization(con: sqlite3.Connection, asset_id: str, days: int = 7) -> float:
-    """Calculate asset utilization percentage over the past N days."""
-    end_date = now_zurich()
-    start_date = end_date - timedelta(days=days)
+    """Calculate asset utilization percentage over the past N days.
     
-    # Calculate total possible booking time (in minutes)
-    total_minutes = days * 24 * 60
-    
-    # Calculate booked time
-    query = """
-        SELECT SUM(
-            (julianday(MIN(end_time, ?)) - julianday(MAX(start_time, ?))) * 24 * 60
-        ) as booked_minutes
-        FROM bookings
-        WHERE asset_id = ?
-          AND start_time < ?
-          AND end_time > ?
+    Args:
+        con: Active database connection
+        asset_id: ID of asset to calculate utilization for
+        days: Number of days to look back
+        
+    Returns:
+        Utilization percentage (0-100)
     """
-    
-    result = con.execute(
-        query,
-        (
-            end_date.isoformat(),
-            start_date.isoformat(),
-            asset_id,
-            end_date.isoformat(),
-            start_date.isoformat(),
-        ),
-    ).fetchone()
-    
-    booked_minutes = result[0] if result and result[0] else 0
-    
-    # Calculate utilization percentage
-    if total_minutes > 0:
-        return (booked_minutes / total_minutes) * 100
-    return 0.0
+    try:
+        end_date = now_zurich()
+        start_date = end_date - timedelta(days=days)
+        
+        # Calculate total possible booking time (in minutes)
+        total_minutes = days * 24 * 60
+        
+        # Calculate booked time
+        query = """
+            SELECT SUM(
+                (julianday(MIN(end_time, ?)) - julianday(MAX(start_time, ?))) * 24 * 60
+            ) as booked_minutes
+            FROM bookings
+            WHERE asset_id = ?
+              AND start_time < ?
+              AND end_time > ?
+        """
+        
+        result = con.execute(
+            query,
+            (
+                end_date.isoformat(),
+                start_date.isoformat(),
+                asset_id,
+                end_date.isoformat(),
+                start_date.isoformat(),
+            ),
+        ).fetchone()
+        
+        booked_minutes = result[0] if result and result[0] else 0
+        
+        # Calculate utilization percentage
+        if total_minutes > 0:
+            return (booked_minutes / total_minutes) * 100
+        return 0.0
+    except Exception as e:
+        logger.error(f"Error calculating utilization for asset {asset_id}: {e}")
+        return 0.0
 
 
 # ============================================================================
@@ -766,11 +1016,20 @@ def update_issue_admin_fields(
     assigned_to: str | None,
     old_status: str,
 ) -> None:
-    """Update issue status and assignment with audit logging."""
+    """Update issue status and assignment with audit logging.
+    
+    Args:
+        con: Active database connection
+        issue_id: ID of issue to update
+        new_status: New status to set
+        assigned_to: Person assigned to the issue (None for unassigned)
+        old_status: Previous status for audit logging
+    """
     updated_at = now_zurich_str()
     set_resolved_at = (new_status == "Resolved")
     
     with con:
+        # Update issue with new status and assignment
         con.execute(
             """
             UPDATE submissions
@@ -793,6 +1052,7 @@ def update_issue_admin_fields(
             ),
         )
         
+        # Log status change for audit trail
         if new_status != old_status:
             con.execute(
                 """
@@ -804,7 +1064,12 @@ def update_issue_admin_fields(
 
 
 def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
-    """Insert a new issue submission into the database."""
+    """Insert a new issue submission into the database.
+    
+    Args:
+        con: Active database connection
+        sub: Validated submission object
+    """
     created_at = now_zurich_str()
     updated_at = created_at
     
@@ -833,13 +1098,23 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
 # EMAIL FUNCTIONS
 # ============================================================================
 def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
-    """Send email with proper error handling."""
+    """Send email with proper error handling.
+    
+    Args:
+        to_email: Recipient email address
+        subject: Email subject line
+        body: Email body content
+        
+    Returns:
+        Tuple of (success boolean, status message)
+    """
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = FROM_EMAIL
     msg["To"] = to_email
     msg.set_content(body)
     
+    # Always CC admin inbox for record keeping
     recipients = [to_email] + ([ADMIN_INBOX] if ADMIN_INBOX else [])
     
     try:
@@ -851,13 +1126,22 @@ def send_email(to_email: str, subject: str, body: str) -> tuple[bool, str]:
         return True, "Email sent successfully."
     except Exception as exc:
         logger.exception("Email sending failed")
+        # Return user-friendly error (debug details only in debug mode)
         if DEBUG:
             return False, f"Email could not be sent: {exc}"
         return False, "Email could not be sent due to a technical issue."
 
 
 def send_admin_report_email(subject: str, body: str) -> tuple[bool, str]:
-    """Send report email to admin inbox only."""
+    """Send report email to admin inbox only.
+    
+    Args:
+        subject: Email subject line
+        body: Email body content
+        
+    Returns:
+        Tuple of (success boolean, status message)
+    """
     if not ADMIN_INBOX:
         return False, "ADMIN_INBOX is not configured."
     
@@ -881,7 +1165,15 @@ def send_admin_report_email(subject: str, body: str) -> tuple[bool, str]:
 
 
 def confirmation_email_text(recipient_name: str, importance: str) -> tuple[str, str]:
-    """Generate confirmation email content for new issue submissions."""
+    """Generate confirmation email content for new issue submissions.
+    
+    Args:
+        recipient_name: Name of the person who submitted the issue
+        importance: Priority level of the issue
+        
+    Returns:
+        Tuple of (subject, body) for the confirmation email
+    """
     subject = "HSG Reporting Tool: Issue Received"
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
     
@@ -906,7 +1198,14 @@ HSG Service Team
 
 
 def resolved_email_text(recipient_name: str) -> tuple[str, str]:
-    """Generate resolution notification email content."""
+    """Generate resolution notification email content.
+    
+    Args:
+        recipient_name: Name of the person who reported the issue
+        
+    Returns:
+        Tuple of (subject, body) for the resolution email
+    """
     subject = "HSG Reporting Tool: Issue Resolved"
     body = f"""Hello {recipient_name},
 
@@ -919,7 +1218,17 @@ HSG Service Team
 
 
 def booking_confirmation_email(recipient_name: str, asset_name: str, start_time: datetime, end_time: datetime) -> tuple[str, str]:
-    """Generate booking confirmation email."""
+    """Generate booking confirmation email.
+    
+    Args:
+        recipient_name: Name of the person who made the booking
+        asset_name: Name of the booked asset
+        start_time: Booking start time
+        end_time: Booking end time
+        
+    Returns:
+        Tuple of (subject, body) for the booking confirmation email
+    """
     subject = f"HSG Asset Booking Confirmation: {asset_name}"
     body = f"""Dear {recipient_name},
 
@@ -942,7 +1251,14 @@ HSG Facility Management
 # REPORTING FUNCTIONS
 # ============================================================================
 def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
-    """Generate weekly summary report content."""
+    """Generate weekly summary report content.
+    
+    Args:
+        df_all: DataFrame containing all submissions
+        
+    Returns:
+        Tuple of (subject, body) for the weekly report email
+    """
     now_dt = now_zurich()
     since_dt = now_dt - timedelta(days=7)
     
@@ -952,6 +1268,7 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
         df.get("resolved_at", pd.Series([None] * len(df))), errors="coerce"
     )
     
+    # Calculate metrics for the past 7 days
     new_last_7d = df[df["created_at_dt"] >= since_dt]
     resolved_last_7d = df[(df["resolved_at_dt"].notna()) & (df["resolved_at_dt"] >= since_dt)]
     open_issues = df[df["status"] != "Resolved"]
@@ -965,6 +1282,7 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
         "Top issue types (open):\n"
     )
     
+    # Add top issue types
     if not open_issues.empty:
         top_types = open_issues["issue_type"].value_counts().head(5)
         for issue_type, count in top_types.items():
@@ -977,7 +1295,17 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
 
 
 def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
-    """Check if weekly report is due and send it."""
+    """Check if weekly report is due and send it.
+    
+    Runs when app is opened; sends report only if:
+    1. Auto-reporting is enabled
+    2. Current day matches configured weekday
+    3. Current hour matches configured hour
+    4. Report hasn't been sent today already
+    
+    Args:
+        con: Active database connection
+    """
     if not AUTO_WEEKLY_REPORT:
         return
     
@@ -985,12 +1313,14 @@ def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
     if now_dt.weekday() != REPORT_WEEKDAY or now_dt.hour != REPORT_HOUR:
         return
     
+    # Check when report was last sent
     log_df = fetch_report_log(con, "weekly")
     if not log_df.empty:
         last_sent = iso_to_dt(str(log_df.iloc[0]["sent_at"]))
         if last_sent is not None and last_sent.date() == now_dt.date():
             return
     
+    # Generate and send report
     df_all = fetch_submissions(con)
     subject, body = build_weekly_report(df_all)
     ok, _ = send_admin_report_email(subject, body)
@@ -1002,20 +1332,33 @@ def send_weekly_report_if_due(con: sqlite3.Connection) -> None:
 # UI HELPER FUNCTIONS
 # ============================================================================
 def apply_hsg_table_header_style() -> None:
-    """Apply HSG brand green styling to all Streamlit table headers."""
+    """Apply HSG brand green styling to all Streamlit table headers.
+    
+    This CSS injection ensures consistent branding across the application
+    without needing per-table styling. It targets both st.dataframe and st.table
+    components.
+    """
     st.markdown(
         f"""
         <style>
+        /* Style for st.table() headers */
         div[data-testid="stTable"] thead tr th {{
             background-color: {HSG_GREEN} !important;
             color: #ffffff !important;
             font-weight: 600 !important;
         }}
         
+        /* Style for st.dataframe() headers */
         div[data-testid="stDataFrame"] thead tr th {{
             background-color: {HSG_GREEN} !important;
             color: #ffffff !important;
             font-weight: 600 !important;
+        }}
+        
+        /* Ensure consistent hover effects */
+        div[data-testid="stDataFrame"] thead tr th:hover {{
+            background-color: {HSG_GREEN} !important;
+            opacity: 0.9 !important;
         }}
         </style>
         """,
@@ -1024,7 +1367,11 @@ def apply_hsg_table_header_style() -> None:
 
 
 def show_errors(errors: Iterable[str]) -> None:
-    """Display validation errors to the user."""
+    """Display validation errors to the user.
+    
+    Args:
+        errors: List of error messages to display
+    """
     for msg in errors:
         st.error(msg)
 
@@ -1038,7 +1385,10 @@ def show_logo() -> None:
 
 
 def render_map_iframe() -> None:
-    """Display interactive HSG campus map in a collapsible section."""
+    """Display interactive HSG campus map in a collapsible section.
+    
+    The map helps users identify room locations when reporting issues.
+    """
     with st.expander("📍 Campus Map Reference", expanded=False):
         url = "https://use.mazemap.com/embed.html?v=1&zlevel=1&center=9.373611,47.429708&zoom=14.7&campusid=710"
         st.markdown(
@@ -1052,12 +1402,26 @@ def render_map_iframe() -> None:
 
 
 def location_label(loc_id: str) -> str:
-    """Convert location ID to human-readable label."""
+    """Convert location ID to human-readable label.
+    
+    Args:
+        loc_id: Location identifier
+        
+    Returns:
+        Human-readable location name or "Unknown location" if not found
+    """
     return LOCATIONS.get(str(loc_id), {}).get("label", "Unknown location")
 
 
 def asset_display_label(row: pd.Series) -> str:
-    """Generate descriptive label for asset selection dropdown."""
+    """Generate descriptive label for asset selection dropdown.
+    
+    Args:
+        row: DataFrame row containing asset data
+        
+    Returns:
+        Formatted label with asset name, type, location, and status
+    """
     status = str(row.get("status", "")).strip().lower()
     if status == "available":
         status_text = "✅ Available"
@@ -1074,7 +1438,14 @@ def asset_display_label(row: pd.Series) -> str:
 
 
 def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Format booking data for user-friendly display."""
+    """Format booking data for user-friendly display.
+    
+    Args:
+        df: Raw booking data DataFrame
+        
+    Returns:
+        Formatted DataFrame with readable timestamps
+    """
     if df.empty:
         return df
     
@@ -1082,6 +1453,7 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
     out["start_time"] = pd.to_datetime(out["start_time"], errors="coerce")
     out["end_time"] = pd.to_datetime(out["end_time"], errors="coerce")
     
+    # Remove invalid rows and sort
     out = out.dropna(subset=["start_time", "end_time"]).sort_values(by=["start_time"])
     
     # Calculate duration
@@ -1102,100 +1474,75 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_asset_map(con: sqlite3.Connection) -> None:
-    """Render an interactive map of asset locations."""
-    st.subheader("🗺️ Asset Location Map")
+    """Render a simple text-based asset location map."""
+    st.subheader("🗺️ Asset Locations")
     
     # Fetch assets with location data
     assets_df = fetch_assets(con)
     
     if assets_df.empty:
-        st.info("No assets available to display on map.")
+        st.info("No assets available to display.")
         return
     
-    # Prepare data for visualization
-    map_data = []
+    # Group by building and floor
+    buildings = {}
     for _, asset in assets_df.iterrows():
         loc_id = asset["location_id"]
         if loc_id in LOCATIONS:
             loc = LOCATIONS[loc_id]
-            map_data.append({
+            building = loc.get("building", "Unknown")
+            floor = loc.get("floor", "Unknown")
+            
+            if building not in buildings:
+                buildings[building] = {}
+            if floor not in buildings[building]:
+                buildings[building][floor] = []
+            
+            status_icon = "✅" if asset["status"].lower() == "available" else "⛔"
+            asset_type = asset["asset_type"]
+            icon = ASSET_TYPES.get(asset_type, {}).get("icon", "📦")
+            
+            buildings[building][floor].append({
                 "name": asset["asset_name"],
-                "type": asset["asset_type"],
-                "location": loc["label"],
-                "x": loc["x"],
-                "y": loc["y"],
-                "status": asset["status"],
-                "building": loc.get("building", "Unknown"),
-                "floor": loc.get("floor", "Unknown")
+                "type": asset_type,
+                "icon": icon,
+                "status_icon": status_icon,
+                "location": loc["label"]
             })
     
-    if not map_data:
+    if not buildings:
         st.info("No location data available for assets.")
         return
     
-    # Create Plotly figure
-    fig = go.Figure()
-    
-    # Group by status for color coding
-    status_colors = {
-        "available": "green",
-        "booked": "red"
-    }
-    
-    for status in ["available", "booked"]:
-        status_data = [d for d in map_data if d["status"] == status]
-        if status_data:
-            fig.add_trace(go.Scatter(
-                x=[d["x"] for d in status_data],
-                y=[d["y"] for d in status_data],
-                mode='markers',
-                name=status.capitalize(),
-                marker=dict(
-                    size=15,
-                    color=status_colors.get(status, "gray"),
-                    symbol='square' if status == "available" else 'circle'
-                ),
-                text=[f"{d['name']}<br>Type: {d['type']}<br>Location: {d['location']}<br>Status: {d['status']}" 
-                      for d in status_data],
-                hoverinfo='text'
-            ))
-    
-    # Add building labels
-    buildings = {}
-    for data in map_data:
-        building = data["building"]
-        if building not in buildings:
-            buildings[building] = {"x": data["x"], "y": data["y"]}
-    
-    for building, coords in buildings.items():
-        fig.add_annotation(
-            x=coords["x"],
-            y=coords["y"] + 5,
-            text=building,
-            showarrow=False,
-            font=dict(size=12, color="black")
-        )
-    
-    fig.update_layout(
-        title="Asset Locations",
-        xaxis_title="X Coordinate",
-        yaxis_title="Y Coordinate",
-        hovermode='closest',
-        showlegend=True,
-        height=500
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+    # Display building-by-building
+    for building, floors in sorted(buildings.items()):
+        with st.expander(f"🏢 Building {building}", expanded=True):
+            for floor, assets in sorted(floors.items()):
+                st.markdown(f"**Floor {floor}**")
+                
+                # Create a simple grid
+                cols = st.columns(3)
+                for idx, asset in enumerate(assets):
+                    col_idx = idx % 3
+                    with cols[col_idx]:
+                        st.markdown(f"""
+                        <div style="border: 1px solid #ddd; border-radius: 5px; padding: 10px; margin-bottom: 10px; background-color: #f9f9f9;">
+                            <div style="font-size: 18px;">{asset['icon']} {asset['name']}</div>
+                            <div style="color: #666; font-size: 0.9em;">{asset['type']}</div>
+                            <div style="color: #666; font-size: 0.9em;">📍 {asset['location']}</div>
+                            <div style="margin-top: 5px;">{asset['status_icon']} {"Available" if asset['status_icon'] == "✅" else "Booked"}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
 
 def render_booking_calendar(con: sqlite3.Connection, asset_id: str = None) -> None:
-    """Render a calendar view of bookings."""
-    st.subheader("📅 Booking Calendar")
+    """Render a text-based calendar view of bookings."""
+    st.subheader("📅 Booking Schedule")
     
     # Fetch bookings
     if asset_id:
         bookings_df = fetch_future_bookings(con, asset_id)
-        title = f"Bookings for {asset_id}"
+        title = f"Bookings for Asset"
     else:
         bookings_df = fetch_todays_bookings(con)
         title = "Today's Bookings"
@@ -1213,55 +1560,40 @@ def render_booking_calendar(con: sqlite3.Connection, asset_id: str = None) -> No
         st.info("No valid booking data available.")
         return
     
-    # Create timeline visualization
-    fig = go.Figure()
+    # Sort by start time
+    bookings_df = bookings_df.sort_values("start_dt")
     
-    colors = plt.cm.Set3.colors
+    # Display as timeline
+    st.markdown(f"**{title}**")
     
-    for idx, (_, booking) in enumerate(bookings_df.iterrows()):
-        # Calculate position
-        start_hour = booking["start_dt"].hour + booking["start_dt"].minute / 60
-        duration_hours = (booking["end_dt"] - booking["start_dt"]).total_seconds() / 3600
+    for _, booking in bookings_df.iterrows():
+        asset_name = booking.get("asset_name", "Unknown Asset")
+        start_time = booking["start_dt"].strftime("%H:%M")
+        end_time = booking["end_dt"].strftime("%H:%M")
+        user_name = booking["user_name"]
+        purpose = booking.get("purpose", "No purpose specified")
         
-        # Add booking bar
-        fig.add_trace(go.Bar(
-            x=[duration_hours],
-            y=[booking.get("asset_name", f"Asset {idx+1}")],
-            base=[start_hour],
-            orientation='h',
-            name=booking["user_name"],
-            marker_color=colors[idx % len(colors)],
-            text=[f"{booking['start_dt'].strftime('%H:%M')} - {booking['end_dt'].strftime('%H:%M')}<br>"
-                  f"User: {booking['user_name']}<br>"
-                  f"Purpose: {booking.get('purpose', 'N/A')}"],
-            hoverinfo='text'
-        ))
-    
-    fig.update_layout(
-        title=title,
-        xaxis_title="Time of Day",
-        yaxis_title="Asset",
-        barmode='overlay',
-        height=max(300, len(bookings_df) * 40),
-        showlegend=False
-    )
-    
-    # Set x-axis to show hours
-    fig.update_xaxes(
-        tickmode='array',
-        tickvals=list(range(24)),
-        ticktext=[f"{h:02d}:00" for h in range(24)],
-        range=[0, 24]
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
+        with st.container(border=True):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**{asset_name}**")
+                st.markdown(f"👤 {user_name}")
+                st.markdown(f"📝 {purpose}")
+            with col2:
+                st.markdown(f"**{start_time} - {end_time}**")
+                duration = int((booking["end_dt"] - booking["start_dt"]).total_seconds() / 60)
+                st.markdown(f"⏱️ {format_duration(duration)}")
 
 
 # ============================================================================
 # ENHANCED APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection) -> None:
-    """Display issue submission form with validation and confirmation."""
+    """Display issue submission form with validation and confirmation.
+    
+    Args:
+        con: Active database connection
+    """
     st.header("📝 Report a Facility Issue")
     st.info("""
     Use this form to report facility-related issues. 
@@ -1378,7 +1710,14 @@ def page_submission_form(con: sqlite3.Connection) -> None:
 
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Format submissions data for user-friendly display."""
+    """Format submissions data for user-friendly display.
+    
+    Args:
+        df: Raw submissions DataFrame
+        
+    Returns:
+        Formatted DataFrame with proper column names and sorting
+    """
     display_df = df.copy().rename(
         columns={
             "id": "ID",
@@ -1410,174 +1749,105 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_charts(df: pd.DataFrame) -> None:
-    """Generate interactive analytics charts (Plotly-only for consistent UI)."""
+    """Generate data visualization charts for issue analytics.
+    
+    Args:
+        df: Submissions DataFrame to visualize
+    """
     if df.empty:
         st.info("No data available for charts.")
         return
-
-    # Ensure datetime parsing once (robust + avoids repeated conversions)
-    df_local = df.copy()
-    df_local["created_at_dt"] = pd.to_datetime(df_local.get("created_at"), errors="coerce")
-
+    
     # Create tabs for different chart types
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Issue Types",
-        "📅 Daily Trends",
+        "📊 Issue Types", 
+        "📅 Daily Trends", 
         "🎯 Priority Levels",
-        "📈 Status Distribution",
+        "📈 Status Distribution"
     ])
-
-    base_layout = dict(
-        template="plotly_white",
-        margin=dict(l=10, r=10, t=50, b=10),
-        height=420,
-    )
-
+    
     with tab1:
         st.subheader("Issues by Type")
-
-        issue_counts = (
-            df_local["issue_type"]
-            .value_counts()
-            .reindex(ISSUE_TYPES, fill_value=0)
-        )
-
-        fig = go.Figure(
-            data=[
-                go.Bar(
-                    x=issue_counts.values,
-                    y=issue_counts.index,
-                    orientation="h",
-                    marker=dict(color=HSG_GREEN),
-                    hovertemplate="Issues: %{x}<extra></extra>",
-                )
-            ]
-        )
-        fig.update_layout(
-            **base_layout,
-            title="Issue Frequency by Type",
-            xaxis_title="Number of Issues",
-            yaxis_title="Issue Type",
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
+        issue_counts = df["issue_type"].value_counts().reindex(ISSUE_TYPES, fill_value=0)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars = ax.barh(issue_counts.index, issue_counts.values, color=HSG_GREEN)
+        ax.set_xlabel("Number of Issues")
+        ax.set_title("Issue Frequency by Type", fontweight="bold")
+        st.pyplot(fig)
+    
     with tab2:
         st.subheader("Submission Trends")
-
-        df_dates = df_local.dropna(subset=["created_at_dt"]).copy()
+        df_dates = df.copy()
+        df_dates["created_at"] = pd.to_datetime(df_dates["created_at"], errors="coerce")
+        df_dates = df_dates.dropna(subset=["created_at"])
+        
         if df_dates.empty:
             st.info("No valid submission dates available.")
         else:
-            df_dates["date"] = df_dates["created_at_dt"].dt.date
             date_range = pd.date_range(
-                start=df_dates["created_at_dt"].min().date(),
-                end=df_dates["created_at_dt"].max().date(),
+                start=df_dates["created_at"].min().date(),
+                end=df_dates["created_at"].max().date(),
                 freq="D",
             )
-
-            daily_counts = df_dates.groupby("date").size()
+            daily_counts = df_dates.groupby(df_dates["created_at"].dt.date).size()
             daily_counts = daily_counts.reindex(date_range.date, fill_value=0)
-
-            fig = go.Figure(
-                data=[
-                    go.Scatter(
-                        x=date_range,
-                        y=daily_counts.values,
-                        mode="lines+markers",
-                        line=dict(color=HSG_GREEN),
-                        hovertemplate="%{x|%Y-%m-%d}<br>Issues: %{y}<extra></extra>",
-                    )
-                ]
-            )
-            fig.update_layout(
-                **base_layout,
-                title="Daily Submission Trends",
-                xaxis_title="Date",
-                yaxis_title="Issues Submitted",
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
+            
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(date_range, daily_counts.values, marker="o", color=HSG_GREEN, linewidth=2)
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Issues Submitted")
+            ax.set_title("Daily Submission Trends", fontweight="bold")
+            ax.grid(True, linestyle="--", alpha=0.3)
+            plt.xticks(rotation=45)
+            st.pyplot(fig)
+    
     with tab3:
         st.subheader("Priority Distribution")
-
-        imp_counts = (
-            df_local["importance"]
-            .value_counts()
-            .reindex(IMPORTANCE_LEVELS, fill_value=0)
-        )
-
-        # Keep meaningful priority colors, but still consistent in Plotly UI
-        priority_colors = {
-            "High": "#ff6b6b",
-            "Medium": "#ffd93d",
-            "Low": "#6bcf7f",
-        }
-
-        fig = go.Figure(
-            data=[
-                go.Bar(
-                    x=imp_counts.index,
-                    y=imp_counts.values,
-                    marker=dict(color=[priority_colors.get(i, HSG_GREEN) for i in imp_counts.index]),
-                    text=imp_counts.values,
-                    textposition="auto",
-                    hovertemplate="Count: %{y}<extra></extra>",
-                )
-            ]
-        )
-        fig.update_layout(
-            **base_layout,
-            title="Issues by Priority Level",
-            xaxis_title="Priority Level",
-            yaxis_title="Number of Issues",
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
+        imp_counts = df["importance"].value_counts().reindex(IMPORTANCE_LEVELS, fill_value=0)
+        colors = ["#ff6b6b", "#ffd93d", "#6bcf7f"]  # Red, Yellow, Green
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        bars = ax.bar(imp_counts.index, imp_counts.values, color=colors)
+        ax.set_xlabel("Priority Level")
+        ax.set_ylabel("Number of Issues")
+        ax.set_title("Issues by Priority Level", fontweight="bold")
+        
+        # Add value labels on bars
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                   f'{int(height)}', ha='center', va='bottom')
+        
+        st.pyplot(fig)
+    
     with tab4:
         st.subheader("Status Overview")
-
-        status_counts = (
-            df_local["status"]
-            .value_counts()
-            .reindex(STATUS_LEVELS, fill_value=0)
-        )
-
+        status_counts = df["status"].value_counts().reindex(STATUS_LEVELS, fill_value=0)
+        
         if status_counts.sum() == 0:
             st.info("No status data available.")
         else:
-            status_colors = {
-                "Pending": "#ff6b6b",
-                "In Progress": "#ffd93d",
-                "Resolved": "#6bcf7f",
-            }
-
-            fig = go.Figure(
-                data=[
-                    go.Pie(
-                        labels=status_counts.index,
-                        values=status_counts.values,
-                        hole=0.35,
-                        marker=dict(colors=[status_colors.get(s, HSG_GREEN) for s in status_counts.index]),
-                        textinfo="percent+label",
-                        hovertemplate="%{label}<br>%{value} issues<extra></extra>",
-                    )
-                ]
+            colors = ["#ff6b6b", "#ffd93d", "#6bcf7f"]  # Pending, In Progress, Resolved
+            fig, ax = plt.subplots(figsize=(8, 8))
+            wedges, texts, autotexts = ax.pie(
+                status_counts.values, 
+                labels=status_counts.index,
+                autopct='%1.1f%%',
+                startangle=90,
+                colors=colors,
+                textprops={'fontsize': 12}
             )
-            fig.update_layout(
-                **base_layout,
-                title="Issue Status Distribution",
-                height=460,
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
+            ax.set_title("Issue Status Distribution", fontweight="bold", fontsize=14)
+            st.pyplot(fig)
 
 
 def page_submitted_issues(con: sqlite3.Connection) -> None:
-    """Display submitted issues with filtering and analytics."""
+    """Display submitted issues with filtering and analytics.
+    
+    Args:
+        con: Active database connection
+    """
     st.header("📋 Submitted Issues Dashboard")
     
     # Load data with error handling
@@ -1712,8 +1982,15 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
 
 def page_booking(con: sqlite3.Connection) -> None:
-    """ENHANCED: Display asset booking interface with availability checking."""
+    """ENHANCED: Display asset booking interface with availability checking.
+    
+    Args:
+        con: Active database connection
+    """
     st.header("📅 Book an Asset")
+    
+    # Display today's bookings calendar
+    render_booking_calendar(con)
     
     # Sync booking statuses
     try:
@@ -1728,9 +2005,6 @@ def page_booking(con: sqlite3.Connection) -> None:
         st.warning("No assets available for booking.")
         return
     
-    # Display today's bookings calendar
-    render_booking_calendar(con)
-    
     # Asset search and filtering
     st.subheader("🔍 Find Available Assets")
     
@@ -1744,15 +2018,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         ).strip().lower()
     
     with col_search2:
-        # Group asset types by category
-        asset_categories = {}
-        for asset_type in assets_df["asset_type"].unique():
-            category = ASSET_TYPES.get(asset_type, {}).get("category", "Other")
-            if category not in asset_categories:
-                asset_categories[category] = []
-            asset_categories[category].append(asset_type)
-        
-        # Create category filter
+        # Get unique asset types
         all_types = sorted(assets_df["asset_type"].unique().tolist())
         type_filter = st.selectbox(
             "Asset Type",
@@ -1822,8 +2088,7 @@ def page_booking(con: sqlite3.Connection) -> None:
             
             st.markdown(f"""
             <div style="border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 15px; 
-                 background-color: #f9f9f9; cursor: pointer; transition: transform 0.2s;"
-                 onclick="document.getElementById('asset_{asset_id}').click()">
+                 background-color: #f9f9f9;">
                 <div style="display: flex; align-items: center; margin-bottom: 10px;">
                     <div style="font-size: 24px; margin-right: 10px;">{icon}</div>
                     <div>
@@ -1839,6 +2104,11 @@ def page_booking(con: sqlite3.Connection) -> None:
                           border-radius: 15px; font-size: 0.8em;">
                         {status_icon} {row['status'].capitalize()}
                     </span>
+                    <button onclick="document.getElementById('asset_{asset_id}').click()" 
+                            style="background: none; border: 1px solid {HSG_GREEN}; color: {HSG_GREEN}; 
+                                   padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8em;">
+                        Select
+                    </button>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -2100,8 +2370,15 @@ def page_booking(con: sqlite3.Connection) -> None:
 
 
 def page_assets(con: sqlite3.Connection) -> None:
-    """ENHANCED: Display asset tracking and management interface."""
+    """ENHANCED: Display asset tracking and management interface.
+    
+    Args:
+        con: Active database connection
+    """
     st.header("📍 Asset Tracking & Management")
+    
+    # Display asset map
+    render_asset_map(con)
     
     # Load assets data
     try:
@@ -2114,9 +2391,6 @@ def page_assets(con: sqlite3.Connection) -> None:
     if df.empty:
         st.info("No assets available in the system.")
         return
-    
-    # Display asset map
-    render_asset_map(con)
     
     # Asset statistics
     st.subheader("📊 Asset Statistics")
@@ -2302,25 +2576,17 @@ def page_assets(con: sqlite3.Connection) -> None:
     # New location selection
     st.subheader("🎯 Select New Location")
     
-    # Group locations by building
-    buildings = {}
-    for loc_id, loc_data in LOCATIONS.items():
-        building = loc_data.get("building", "Unknown")
-        if building not in buildings:
-            buildings[building] = []
-        buildings[building].append((loc_id, loc_data["label"], loc_data.get("type", "unknown")))
-    
-    # Create location selector with building grouping
+    # Create location selector
     location_options = []
-    for building, locations in sorted(buildings.items()):
-        location_options.append(f"🏢 {building}")
-        for loc_id, label, loc_type in sorted(locations, key=lambda x: x[1]):
-            location_options.append(f"    📍 {label}")
+    for loc_id, loc_data in sorted(LOCATIONS.items(), key=lambda x: x[1]["label"]):
+        building = loc_data.get("building", "Unknown")
+        location_options.append(f"📍 {loc_data['label']} (Building {building})")
     
     selected_location_display = st.selectbox(
         "Choose destination:",
         options=location_options,
-        help="Select the new location for this asset"
+        help="Select the new location for this asset",
+        key="new_location_select"
     )
     
     # Find the actual location ID
@@ -2334,10 +2600,11 @@ def page_assets(con: sqlite3.Connection) -> None:
     move_reason = st.text_area(
         "Reason for move (optional):",
         placeholder="e.g., Maintenance, Reallocation, Repair, Cleaning...",
-        height=80
+        height=80,
+        key="move_reason"
     )
     
-    add_notes = st.checkbox("Update asset notes with move information")
+    add_notes = st.checkbox("Update asset notes with move information", key="add_move_notes")
     
     # Move confirmation
     col_confirm1, col_confirm2, col_confirm3 = st.columns([1, 2, 1])
@@ -2425,7 +2692,13 @@ def page_assets(con: sqlite3.Connection) -> None:
 
 
 def page_overwrite_status(con: sqlite3.Connection) -> None:
-    """Admin interface for managing issue statuses and assignments."""
+    """Admin interface for managing issue statuses and assignments.
+    
+    Password protected to ensure only authorized personnel can modify issue states.
+    
+    Args:
+        con: Active database connection
+    """
     st.header("🔧 Admin Panel - Issue Management")
     
     # Password protection
@@ -2617,7 +2890,11 @@ def page_overwrite_status(con: sqlite3.Connection) -> None:
 
 
 def page_overview_dashboard(con: sqlite3.Connection) -> None:
-    """Display comprehensive overview dashboard with key metrics."""
+    """Display comprehensive overview dashboard with key metrics.
+    
+    Args:
+        con: Active database connection
+    """
     st.header("📊 Overview Dashboard")
     st.caption("Real-time overview of system status and key metrics.")
     
