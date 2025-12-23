@@ -218,7 +218,9 @@ def safe_localize(dt_naive: datetime) -> datetime:
 def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
     """Calculate expected resolution time based on SLA."""
     created_dt = iso_to_dt(created_at_iso)
-    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
+    sla_hours = SLA_HOURS_BY_IMPORTANCE[
+        st.session_state["importance_level"]
+    ]
     if created_dt is None or sla_hours is None:
         return None
     return created_dt + timedelta(hours=int(sla_hours))
