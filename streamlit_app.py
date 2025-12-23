@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from typing import Iterable
+import plotly.graph_objects as go
 
 import pandas as pd
 import pytz
