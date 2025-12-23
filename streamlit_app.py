@@ -948,7 +948,10 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             key="issue_priority",
             help="Used to determine the SLA target handling time.",
         )
-
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
+        sla_part = f"SLA: {sla_hours}h" if sla_hours is not None else "SLA: n/a"
+        st.caption(f"{sla_part}")
+        
         desc = st.text_area(
             "Problem Description*",
             max_chars=500,
@@ -956,10 +959,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             height=110,
             key="issue_description",
         ).strip()
-
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
-        sla_part = f"SLA: {sla_hours}h" if sla_hours is not None else "SLA: n/a"
-        st.caption(f"{sla_part} • Please limit your description to 500 characters.")
+        st.caption(f"Please limit your description to 500 characters.")
 
         # 5) Upload photo
         st.subheader("📸 Upload Photo")
