@@ -906,15 +906,7 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 # APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Submission page with the requested order, but compact + user-friendly.
-
-    UX intent (why):
-    - Only 3 section headers to reduce visual clutter.
-    - Priority + description live-update, but are part of "Issue Details" (no extra headers).
-    - SLA + char counter shown as one concise helper line.
-    - Map stays in the required order but is collapsed by default.
-    """
-
+    """Submission page with the requested order, compact + user-friendly + framed."""
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
 
@@ -926,72 +918,71 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     st.session_state.setdefault("issue_priority", "Low")
     st.session_state.setdefault("issue_description", "")
 
-    # 1) Your information
-    st.subheader("👤 Your Information")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
-    with c2:
-        st.text_input(
-            "Email Address*",
-            placeholder="firstname.lastname@student.unisg.ch",
-            key="issue_email",
-            help="Must be @unisg.ch or @student.unisg.ch",
+    # ✅ Visual frame around the whole user flow
+    with bordered_container(key="issue_form_card"):
+        # 1) Your information
+        st.subheader("👤 Your Information")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
+        with c2:
+            st.text_input(
+                "Email Address*",
+                placeholder="firstname.lastname@student.unisg.ch",
+                key="issue_email",
+                help="Must be @unisg.ch or @student.unisg.ch",
+            )
+
+        # 2) Issue details (includes: room, type, priority, description)
+        st.subheader("📋 Issue Details")
+
+        c3, c4 = st.columns(2)
+        with c3:
+            room_raw = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
+            if room_raw:
+                normalized = normalize_room(room_raw)
+                if normalized != room_raw:
+                    st.caption(f"Saved as: **{normalized}**")
+        with c4:
+            st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
+
+        st.selectbox(
+            "Priority Level*",
+            options=IMPORTANCE_LEVELS,
+            key="issue_priority",
+            help="Used to determine the SLA target handling time.",
         )
 
-    # 2) Issue details (includes: room, type, priority, description)
-    st.subheader("📋 Issue Details")
+        desc = st.text_area(
+            "Problem Description*",
+            max_chars=500,
+            placeholder="What happened? Where exactly? Since when? Any impact?",
+            height=110,
+            key="issue_description",
+        ).strip()
 
-    c3, c4 = st.columns(2)
-    with c3:
-        room_raw = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
-        if room_raw:
-            normalized = normalize_room(room_raw)
-            if normalized != room_raw:
-                # Compact hint; avoids taking much vertical space.
-                st.caption(f"Saved as: **{normalized}**")
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
+        sla_part = f"SLA: {sla_hours}h" if sla_hours is not None else "SLA: n/a"
+        st.caption(f"{sla_part} • {len(desc)}/500 characters")
 
-    with c4:
-        st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
+        # 5) Upload photo
+        st.subheader("📸 Upload Photo")
+        uploaded_file = st.file_uploader(
+            "Optional: add a photo (jpg / png)",
+            type=["jpg", "jpeg", "png"],
+            help="Avoid personal data in the photo where possible.",
+            key="issue_photo",
+        )
+        if uploaded_file is not None:
+            st.image(uploaded_file, caption="Preview", use_container_width=True)
 
-    # Priority (live SLA)
-    st.selectbox(
-        "Priority Level*",
-        options=IMPORTANCE_LEVELS,
-        key="issue_priority",
-        help="Used to determine the SLA target handling time.",
-    )
+        # 6) Map (kept in required order; already collapsible)
+        render_map_iframe()
 
-    # Description (live char counter)
-    desc = st.text_area(
-        "Problem Description*",
-        max_chars=500,
-        placeholder="What happened? Where exactly? Since when? Any impact?",
-        height=110,
-        key="issue_description",
-    ).strip()
+        # 7) Submit button (last)
+        submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
-    # One compact helper line (instead of multiple info + captions)
-    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
-    sla_part = f"SLA: {sla_hours}h" if sla_hours is not None else "SLA: n/a"
-    st.caption(f"{sla_part} • {len(desc)}/500 characters")
-
-    # 5) Upload photo
-    st.subheader("📸 Upload Photo")
-    uploaded_file = st.file_uploader(
-        "Optional: add a photo (jpg / png)",
-        type=["jpg", "jpeg", "png"],
-        help="Avoid personal data in the photo where possible.",
-        key="issue_photo",
-    )
-    if uploaded_file is not None:
-        st.image(uploaded_file, caption="Preview", use_container_width=True)
-
-    # 6) Map (still in correct order; collapsed by default inside expander)
-    render_map_iframe()
-
-    # 7) Submit button (last)
-    submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
+    # --- Submit handling stays outside the container (logic stays identical)
     if not submitted:
         return
 
@@ -1012,7 +1003,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     try:
         insert_submission(con, sub)
     except Exception as e:
-        # Keep user-facing messaging short; log the detail for debugging.
         st.error("Database error while saving your report. Please try again.")
         logger.error("Failed to insert submission: %s", e)
         return
@@ -1026,7 +1016,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     else:
         st.warning(f"Note: {msg}")
 
-    # Clear inputs after success to prevent accidental resubmission on rerun.
     for k in [
         "issue_name",
         "issue_email",
