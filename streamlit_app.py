@@ -19,20 +19,6 @@ from __future__ import annotations
 #   Therefore, anything that must react immediately (e.g., SLA info, live char counter)
 #   must be rendered OUTSIDE the form.
 #
-# Change applied (requested):
-# - Submission form order is now EXACTLY:
-#   1) Your information
-#   2) Issue details
-#   3) Priority level
-#   4) Problem description
-#   5) Optional photo upload
-#   6) Map
-#   7) Submit button
-#
-# Implementation note:
-# - To guarantee the exact visual order *and* keep SLA + char counter live,
-#   the submission page no longer uses `st.form(...)`. We validate + submit only
-#   when the user clicks the submit button.
 # ============================================================================
 
 # ============================================================================
@@ -973,7 +959,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
         sla_part = f"SLA: {sla_hours}h" if sla_hours is not None else "SLA: n/a"
-        st.caption(f"{sla_part} • {len(desc)}/500 characters")
+        st.caption(f"{sla_part} • Please limit your description to 500 characters.")
 
         # 5) Upload photo
         st.subheader("📸 Upload Photo")
