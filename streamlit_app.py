@@ -1752,7 +1752,7 @@ def page_assets(con: sqlite3.Connection) -> None:
 
     st.subheader("📊 Asset Overview")
 
-     total_assets = len(df)
+    total_assets = len(df)
     available_assets = int((df["status"].astype(str).str.lower() == "available").sum())
     booked_assets = int((df["status"].astype(str).str.lower() == "booked").sum())
     
