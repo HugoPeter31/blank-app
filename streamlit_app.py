@@ -929,7 +929,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
                 help="Must be @unisg.ch or @student.unisg.ch",
             ).strip().lower()
 
-    if email_raw and not valid_email(email_raw):
+        if email_raw and not valid_email(email_raw):
         st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
 
 
