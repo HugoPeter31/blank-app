@@ -596,6 +596,21 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
         params=(asset_id, now_iso),
     )
 
+def fetch_future_bookings_for_user(con: sqlite3.Connection, user_name: str) -> pd.DataFrame:
+    """Retrieve upcoming bookings for a specific user (case-insensitive match)."""
+    now_iso = now_zurich().isoformat(timespec="seconds")
+    return pd.read_sql(
+        """
+        SELECT b.asset_id, a.asset_name, a.asset_type, b.start_time, b.end_time
+        FROM bookings b
+        JOIN assets a ON a.asset_id = b.asset_id
+        WHERE LOWER(b.user_name) = LOWER(?)
+          AND b.end_time >= ?
+        ORDER BY b.start_time
+        """,
+        con,
+        params=(user_name.strip(), now_iso),
+    )
 
 def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | None:
     """Find the next available time for a currently booked asset."""
@@ -612,6 +627,29 @@ def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | No
     if not row or not row[0]:
         return None
     return iso_to_dt(str(row[0]))
+
+def count_active_bookings(con: sqlite3.Connection) -> int:
+    """Count bookings that are active right now (for KPI cards)."""
+    now_iso = now_zurich().isoformat(timespec="seconds")
+    row = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM bookings
+        WHERE start_time <= ? AND end_time > ?
+        """,
+        (now_iso, now_iso),
+    ).fetchone()
+    return int(row[0] if row and row[0] is not None else 0)
+
+
+def count_future_bookings(con: sqlite3.Connection) -> int:
+    """Count bookings that end in the future (optional KPI)."""
+    now_iso = now_zurich().isoformat(timespec="seconds")
+    row = con.execute(
+        "SELECT COUNT(*) FROM bookings WHERE end_time >= ?",
+        (now_iso,),
+    ).fetchone()
+    return int(row[0] if row and row[0] is not None else 0)
 
 
 # ============================================================================
@@ -904,6 +942,28 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
 
     return out.rename(columns={"user_name": "User", "start_time": "Start Time", "end_time": "End Time"})
 
+def format_user_bookings_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Format user booking data for a user-friendly display."""
+    if df.empty:
+        return df
+
+    out = df.copy()
+    out["start_time"] = pd.to_datetime(out.get("start_time"), errors="coerce")
+    out["end_time"] = pd.to_datetime(out.get("end_time"), errors="coerce")
+
+    out = out.dropna(subset=["start_time", "end_time"]).sort_values(by=["start_time"])
+    out["start_time"] = out["start_time"].dt.strftime("%Y-%m-%d %H:%M")
+    out["end_time"] = out["end_time"].dt.strftime("%Y-%m-%d %H:%M")
+
+    return out.rename(
+        columns={
+            "asset_id": "Asset ID",
+            "asset_name": "Asset",
+            "asset_type": "Type",
+            "start_time": "Start",
+            "end_time": "End",
+        }
+    )
 
 def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str:
     """Create a stable preview for long text fields in tables."""
@@ -1313,6 +1373,16 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.write(selected_row.get("user_comment", ""))
 
     st.subheader(f"📊 Results ({len(filtered_df)} issues)")
+
+    open_first = st.toggle("Show open issues first", value=True)
+
+    if open_first:
+        filtered_df["_open_rank"] = (filtered_df["status"] == "Resolved").astype(int)  # open=0, resolved=1
+        filtered_df = filtered_df.sort_values(
+            by=["_open_rank", "importance", "created_at"],
+            ascending=[True, True, False],
+        )
+        filtered_df = filtered_df.drop(columns=["_open_rank"], errors="ignore")
     display_df = build_display_table(filtered_df)
 
     column_config = {
@@ -1383,7 +1453,6 @@ def page_booking(con: sqlite3.Connection) -> None:
             st.toast("Booking confirmed ✅", icon="📅")
 
 
-
     try:
         sync_asset_statuses_from_bookings(con)
         assets_df = fetch_assets(con)
@@ -1395,6 +1464,27 @@ def page_booking(con: sqlite3.Connection) -> None:
     if assets_df.empty:
         st.warning("No assets available for booking.")
         return
+
+    st.subheader("📊 Booking Overview")
+
+    try:
+        total_assets = len(assets_df)
+        available_assets = int((assets_df["status"].astype(str).str.lower() == "available").sum())
+        booked_assets = int((assets_df["status"].astype(str).str.lower() == "booked").sum())
+        active_bookings = count_active_bookings(con)
+        future_bookings = count_future_bookings(con)  # optional
+    except Exception as e:
+        st.error(f"Failed to compute booking metrics: {e}")
+        logger.error("Booking metrics error: %s", e)
+        total_assets, available_assets, booked_assets, active_bookings, future_bookings = 0, 0, 0, 0, 0
+    
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Assets", total_assets)
+    k2.metric("Available", available_assets)
+    k3.metric("Booked", booked_assets)
+    k4.metric("Active Bookings", active_bookings)
+    k5.metric("Future Bookings", future_bookings)
+
 
     st.subheader("🔍 Find Assets")
 
@@ -1444,7 +1534,7 @@ def page_booking(con: sqlite3.Connection) -> None:
     view_df = view_df.sort_values(by=["_status_rank", "asset_type", "asset_name"]).drop(columns=["_status_rank"])
 
     if view_df.empty:
-        st.info("No assets match your search criteria.")
+        st.info("No assets match your filters/search. Try 'All Types' + 'All', or use a shorter keyword.")
         return
 
     st.subheader("🎯 Select Asset")
@@ -1495,6 +1585,42 @@ def page_booking(con: sqlite3.Connection) -> None:
     if str(selected_asset["status"]).lower() != "available":
         st.info("Select an available asset to create a booking.")
         return
+
+st.divider()
+st.subheader("👤 My Bookings")
+
+my_name = st.text_input(
+    "Enter your name to view your upcoming bookings",
+    placeholder="e.g., Max Muster",
+    key="my_bookings_name",
+).strip()
+
+if not my_name:
+    st.caption("Tip: Use the exact same name you used when booking.")
+else:
+    try:
+        my_df = fetch_future_bookings_for_user(con, my_name)
+        if my_df.empty:
+            st.info("No upcoming bookings found for this name.")
+        else:
+            st.dataframe(
+                format_user_bookings_table(my_df),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            csv_bytes = my_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download my bookings (CSV)",
+                data=csv_bytes,
+                file_name=f"my_bookings_{now_zurich().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+    except Exception as e:
+        st.error(f"Failed to load your bookings: {e}")
+        logger.error("My bookings load error: %s", e)
+
 
     st.divider()
     st.subheader("📝 Create New Booking")
@@ -1624,6 +1750,18 @@ def page_assets(con: sqlite3.Connection) -> None:
         st.info("No assets available in the system.")
         return
 
+    st.subheader("📊 Asset Overview")
+
+     total_assets = len(df)
+    available_assets = int((df["status"].astype(str).str.lower() == "available").sum())
+    booked_assets = int((df["status"].astype(str).str.lower() == "booked").sum())
+    
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total Assets", total_assets)
+    k2.metric("Available", available_assets)
+    k3.metric("Booked", booked_assets)
+
+
     df = df.copy()
     df["location_label"] = df["location_id"].apply(location_label)
 
@@ -1645,6 +1783,30 @@ def page_assets(con: sqlite3.Connection) -> None:
         )
 
     filtered_df = df[(df["location_label"].isin(location_filter)) & (df["status"].isin(status_filter))]
+
+    st.subheader("🔎 Search Assets")
+
+    search_query = st.text_input(
+        "Search by ID, name, or type",
+        placeholder="e.g., projector, chair, laptop cart, ROOM_A_08005 ...",
+    ).strip().lower()
+    
+    if search_query:
+        filtered_df = filtered_df[
+            filtered_df["asset_id"].astype(str).str.lower().str.contains(search_query, na=False)
+            | filtered_df["asset_name"].astype(str).str.lower().str.contains(search_query, na=False)
+            | filtered_df["asset_type"].astype(str).str.lower().str.contains(search_query, na=False)
+        ].copy()
+
+    # Quick jump reduces scrolling when many locations exist
+    location_labels = sorted(filtered_df["location_label"].unique().tolist())
+    jump_location = st.selectbox(
+        "Quick jump to location",
+        options=["(All locations)"] + location_labels,
+    )
+    
+    if jump_location != "(All locations)":
+        filtered_df = filtered_df[filtered_df["location_label"] == jump_location].copy()
 
     st.subheader("📦 Assets by Location")
     if filtered_df.empty:
@@ -1714,11 +1876,16 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
     if st.session_state.pop("admin_update_toast", False):  # Keeps a short success message visible after rerun (Streamlit reruns after state changes).
         st.toast("Saved ✅", icon="✅")
 
-
     entered_password = st.text_input("Enter Admin Password", type="password")
-    if entered_password != config.admin_password:
-        st.info("🔐 Please enter the admin password to continue.")
+    
+    if not entered_password:
+        st.caption("🔐 Admin access required.")
         return
+    
+    if entered_password != config.admin_password:
+        st.error("Incorrect password.")
+        return
+
 
     st.subheader("⚡ Quick Actions")
     col_action1, col_action2 = st.columns(2)
@@ -1760,8 +1927,8 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
 
     filtered_df = df[df["status"].isin(admin_status_filter)]
     if filtered_df.empty:
-        st.info("No issues match the selected filters.")
-        return
+        st.info("No assets match your filters/search. Try clearing filters or using a shorter search term.")
+
 
     st.subheader("🎯 Select Issue to Update")
     issue_options = {
