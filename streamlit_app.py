@@ -75,10 +75,17 @@ LOCATIONS = {
     "H_A_09001": {"label": "Hallway near Room A 09-001", "x": 15, "y": 25},
     "R_B_10012": {"label": "Room B 10-012", "x": 40, "y": 60},
     "H_B_10012": {"label": "Hallway near Room B 10-012", "x": 45, "y": 65},
+    "R_A_08005": {"label": "Room A 08-005", "x": 8, "y": 16},
+    "H_A_08005": {"label": "Hallway near Room A 08-005", "x": 12, "y": 18},
+    "R_A_10003": {"label": "Room A 10-003", "x": 14, "y": 28},
+    "H_A_10003": {"label": "Hallway near Room A 10-003", "x": 18, "y": 30},
+    "R_B_09007": {"label": "Room B 09-007", "x": 38, "y": 52},
+    "H_B_09007": {"label": "Hallway near Room B 09-007", "x": 42, "y": 54},
+    "R_C_11002": {"label": "Room C 11-002", "x": 65, "y": 78},
+    "H_C_11002": {"label": "Hallway near Room C 11-002", "x": 68, "y": 80},
 }
 
-# Keeps long descriptions readable in tables while still allowing full access via detail view.
-DESCRIPTION_PREVIEW_CHARS = 90
+DESCRIPTION_PREVIEW_CHARS = 90 # Keeps long descriptions readable in tables while still allowing full access via detail view.
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -428,6 +435,24 @@ def seed_assets(con: sqlite3.Connection) -> None:
         ("PROJECTOR_1", "Portable Projector 1", "Equipment", "H_B_10012", "available"),
         ("CHAIR_H1", "Hallway Chair 1", "Chair", "H_A_09001", "available"),
         ("CHAIR_H2", "Hallway Chair 2", "Chair", "H_A_09001", "available"),
+        ("ROOM_A_08005", "Study Room A 08-005", "Room", "R_A_08005", "available"),
+        ("WHITEBOARD_A08005", "Whiteboard A08-005", "Equipment", "R_A_08005", "available"),
+        ("CHAIR_A08005_1", "Chair A08-005 #1", "Chair", "R_A_08005", "available"),
+        ("CHAIR_A08005_2", "Chair A08-005 #2", "Chair", "R_A_08005", "available"),
+        ("ROOM_A_10003", "Study Room A 10-003", "Room", "R_A_10003", "available"),
+        ("PROJECTOR_A10003", "Projector A10-003", "Equipment", "R_A_10003", "available"),
+        ("TABLE_A10003", "Table A10-003", "Furniture", "R_A_10003", "available"),
+        ("ROOM_B_09007", "Study Room B 09-007", "Room", "R_B_09007", "available"),
+        ("LAPTOP_CART_B09007", "Laptop Cart B09-007", "Equipment", "R_B_09007", "available"),
+        ("CHAIR_B09007_1", "Chair B09-007 #1", "Chair", "R_B_09007", "available"),
+        ("CHAIR_B09007_2", "Chair B09-007 #2", "Chair", "R_B_09007", "available"),
+        ("ROOM_C_11002", "Meeting Room C 11-002", "Room", "R_C_11002", "available"),
+        ("SCREEN_C11002", "Presentation Screen C11-002", "Equipment", "R_C_11002", "available"),
+        ("SPEAKER_C11002", "Speaker C11-002", "Equipment", "R_C_11002", "available"),
+        ("SOFA_HA08005", "Hallway Sofa (A08-005)", "Furniture", "H_A_08005", "available"),
+        ("PLANT_HA10003", "Hallway Plant (A10-003)", "Furniture", "H_A_10003", "available"),
+        ("BIN_HB09007", "Recycling Bin (B09-007)", "Furniture", "H_B_09007", "available"),
+        ("SIGN_HC11002", "Info Sign (C11-002)", "Furniture", "H_C_11002", "available"),
     ]
 
     with con:
