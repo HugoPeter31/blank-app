@@ -1669,6 +1669,9 @@ def page_assets(con: sqlite3.Connection) -> None:
 def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Admin interface for managing issue statuses and assignments (password protected)."""
     st.header("🔧 Admin Panel - Issue Management")
+    if st.session_state.pop("admin_update_toast", False):  # Keeps a short success message visible after rerun (Streamlit reruns after state changes).
+        st.toast("Saved ✅", icon="✅")
+
 
     entered_password = st.text_input("Enter Admin Password", type="password")
     if entered_password != config.admin_password:
@@ -1806,7 +1809,8 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
                 else:
                     st.warning(f"Notification email failed: {msg}")
 
-        st.success("✅ Issue updated successfully!")
+        # We store a flag because st.rerun() would otherwise erase the message immediately.
+        st.session_state["admin_update_toast"] = True
         st.rerun()
 
     except Exception as e:
