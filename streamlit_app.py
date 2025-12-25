@@ -1074,8 +1074,8 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
     st.success("✅ Issue reported successfully!")
     st.caption(
-    f"Reference: **{normalize_room(sub.room_number)}** • "
-    f"Priority: **{sub.importance}** • Status: **Pending**"
+        f"Reference: **{normalize_room(sub.room_number)}** • "
+        f"Priority: **{sub.importance}** • Status: **Pending**"
 )
 
     if ok:
@@ -1699,7 +1699,6 @@ def page_assets(con: sqlite3.Connection) -> None:
                 with con:
                     con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
 
-                st.toast("Asset moved ✅", icon="🚚")
                 st.session_state["asset_move_success_toast"] = True
                 st.rerun()
 
