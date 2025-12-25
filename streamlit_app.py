@@ -1370,15 +1370,18 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 def page_booking(con: sqlite3.Connection) -> None:
     """Display asset booking interface with availability checking."""
     st.header("📅 Book an Asset")
+    
     if st.session_state.pop("booking_success_toast", False):
-    details = st.session_state.pop("booking_success_details", None)
-    if details:
-        st.toast(
-            f"Booked {details['asset_name']} • {details['start']} → {details['end']} ✅",
-            icon="📅",
-        )
-    else:
-        st.toast("Booking confirmed ✅", icon="📅")
+        details = st.session_state.pop("booking_success_details", None)
+    
+        if details:
+            st.toast(
+                f"Booked {details['asset_name']} • {details['start']} → {details['end']} ✅",
+                icon="📅",
+            )
+        else:
+            st.toast("Booking confirmed ✅", icon="📅")
+
 
 
     try:
