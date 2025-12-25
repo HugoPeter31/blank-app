@@ -922,12 +922,16 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         with c1:
             st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
         with c2:
-            st.text_input(
+            email_raw = st.text_input(
                 "Email Address*",
                 placeholder="firstname.lastname@student.unisg.ch",
                 key="issue_email",
                 help="Must be @unisg.ch or @student.unisg.ch",
-            )
+            ).strip().lower()
+
+    if email_raw and not valid_email(email_raw):
+        st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
+
 
         # 2) Issue details (includes: room, type, priority, description)
         st.subheader("📋 Issue Details")
@@ -937,8 +941,15 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             room_raw = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
             if room_raw:
                 normalized = normalize_room(room_raw)
+        
+                # Show what will be stored to reduce confusion and avoid duplicates in the DB.
                 if normalized != room_raw:
                     st.caption(f"Saved as: **{normalized}**")
+        
+                # Inline hint prevents frustration: users see formatting issues immediately.
+                if not valid_room_number(normalized):
+                    st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
+
         with c4:
             st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
 
@@ -959,19 +970,19 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             )
         else:
             st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
-
-
-
         
-        
+        max_len = 500
         desc = st.text_area(
             "Problem Description*",
-            max_chars=500,
+            max_chars=max_len,
             placeholder="What happened? Where exactly? Since when? Any impact?",
             height=110,
             key="issue_description",
         ).strip()
-        st.caption(f"Please limit your description to 500 characters.")
+        
+        st.caption(
+            f"{len(desc)}/{max_len} characters • Tip: include *what*, *where*, *since when*, *impact*."
+        )
 
         # 5) Upload photo
         st.subheader("📸 Upload Photo")
@@ -988,6 +999,13 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         render_map_iframe()
 
         # 7) Submit button (last)
+        with st.expander("🔎 Review your report", expanded=False):
+        st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
+        st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
+        st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
+        st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
+        st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
+
         submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
     # --- Submit handling stays outside the container (logic stays identical)
