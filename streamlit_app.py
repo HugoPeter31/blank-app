@@ -928,26 +928,8 @@ def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """Submission page with the requested order, compact + user-friendly + framed."""
-    
-    # Enhanced title section
-    st.markdown("""
-        <div style="
-            background: linear-gradient(135deg, #f5f7fa 0%, #e4edf5 100%);
-            padding: 1.5rem;
-            border-radius: 12px;
-            border-left: 6px solid #2c6cbf;
-            margin-bottom: 2rem;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
-        ">
-            <h1 style="color: #2c3e50; margin: 0 0 0.5rem 0; font-size: 1.8rem;">
-                📝 Report a Facility Issue
-            </h1>
-            <p style="color: #5d6d7e; margin: 0; font-size: 1rem;">
-                Fill out the form below to report maintenance issues, IT problems, or facility concerns.
-                <span style="color: #e74c3c;">*</span> indicates required fields.
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
+    st.header("📝 Report a Facility Issue")
+    st.caption("Fields marked with * are mandatory.")
 
     # Stable defaults (prevents KeyErrors on first render; keeps reruns predictable)
     st.session_state.setdefault("issue_name", "")
