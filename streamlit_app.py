@@ -1565,6 +1565,9 @@ def page_booking(con: sqlite3.Connection) -> None:
 def page_assets(con: sqlite3.Connection) -> None:
     """Display asset tracking and management interface."""
     st.header("📍 Asset Tracking")
+    if st.session_state.pop("asset_move_success_toast", False):     # Short confirmation after successful asset move (survives rerun)
+        st.toast("Asset moved ✅", icon="🚚")
+
 
     try:
         df = fetch_assets(con)
@@ -1652,13 +1655,9 @@ def page_assets(con: sqlite3.Connection) -> None:
                 with con:
                     con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
 
-                st.success(
-                    "✅ Move request submitted successfully!\n\n"
-                    f"**Asset:** {selected_asset['asset_name']}\n"
-                    f"**From:** {selected_asset['location_label']}\n"
-                    f"**To:** {LOCATIONS[new_location_id]['label']}"
-                )
+                st.session_state["asset_move_success_toast"] = True     # Store a short success flag so the confirmation survives st.rerun()
                 st.rerun()
+
             except Exception as e:
                 st.error(f"Failed to move asset: {e}")
                 logger.error("Asset movement error: %s", e)
