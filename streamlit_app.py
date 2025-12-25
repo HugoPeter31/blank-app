@@ -1073,6 +1073,11 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     ok, msg = send_email(sub.hsg_email, subject, body, config=config)
 
     st.success("✅ Issue reported successfully!")
+    st.caption(
+    f"Reference: **{normalize_room(sub.room_number)}** • "
+    f"Priority: **{sub.importance}** • Status: **Pending**"
+)
+
     if ok:
         st.balloons()
     else:
@@ -1366,6 +1371,13 @@ def page_booking(con: sqlite3.Connection) -> None:
     """Display asset booking interface with availability checking."""
     st.header("📅 Book an Asset")
     if st.session_state.pop("booking_success_toast", False):
+    details = st.session_state.pop("booking_success_details", None)
+    if details:
+        st.toast(
+            f"Booked {details['asset_name']} • {details['start']} → {details['end']} ✅",
+            icon="📅",
+        )
+    else:
         st.toast("Booking confirmed ✅", icon="📅")
 
 
@@ -1578,9 +1590,13 @@ def page_booking(con: sqlite3.Connection) -> None:
 
         sync_asset_statuses_from_bookings(con)
 
+        st.session_state["booking_success_details"] = {
+            "asset_name": str(selected_asset["asset_name"]),
+            "start": start_dt.strftime("%Y-%m-%d %H:%M"),
+            "end": end_dt.strftime("%Y-%m-%d %H:%M"),
+        }
         st.session_state["booking_success_toast"] = True
         st.rerun()
-
 
     except Exception as e:
         st.error(f"Failed to create booking: {e}")
