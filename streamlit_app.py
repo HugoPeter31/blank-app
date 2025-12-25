@@ -914,26 +914,37 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     st.session_state.setdefault("issue_priority", "Low")
     st.session_state.setdefault("issue_description", "")
 
+    # Local variables (avoid NameError on first render)
+    email_raw = ""
+    room_raw = ""
+    desc = ""
+
     # ✅ Visual frame around the whole user flow
     with bordered_container(key="issue_form_card"):
         # 1) Your information
         st.subheader("👤 Your Information")
         c1, c2 = st.columns(2)
+
         with c1:
             st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
+
         with c2:
-            email_raw = st.text_input(
-                "Email Address*",
-                placeholder="firstname.lastname@student.unisg.ch",
-                key="issue_email",
-                help="Must be @unisg.ch or @student.unisg.ch",
-            ).strip().lower()
+            email_raw = (
+                st.text_input(
+                    "Email Address*",
+                    placeholder="firstname.lastname@student.unisg.ch",
+                    key="issue_email",
+                    help="Must be @unisg.ch or @student.unisg.ch",
+                )
+                .strip()
+                .lower()
+            )
 
-        if email_raw and not valid_email(email_raw):
-        st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
+            # ✅ Inline email validation must be inside the same UI block
+            if email_raw and not valid_email(email_raw):
+                st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
 
-
-        # 2) Issue details (includes: room, type, priority, description)
+        # 2) Issue details
         st.subheader("📋 Issue Details")
 
         c3, c4 = st.columns(2)
@@ -941,11 +952,11 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             room_raw = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
             if room_raw:
                 normalized = normalize_room(room_raw)
-        
+
                 # Show what will be stored to reduce confusion and avoid duplicates in the DB.
                 if normalized != room_raw:
                     st.caption(f"Saved as: **{normalized}**")
-        
+
                 # Inline hint prevents frustration: users see formatting issues immediately.
                 if not valid_room_number(normalized):
                     st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
@@ -960,6 +971,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             help="Used to determine the SLA target handling time.",
         )
 
+        # ✅ SLA explanation (clear to user)
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
         if sla_hours is not None:
             target_dt = now_zurich() + timedelta(hours=int(sla_hours))
@@ -970,7 +982,8 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             )
         else:
             st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
-        
+
+        # ✅ Description with live counter
         max_len = 500
         desc = st.text_area(
             "Problem Description*",
@@ -979,10 +992,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             height=110,
             key="issue_description",
         ).strip()
-        
-        st.caption(
-            f"{len(desc)}/{max_len} characters • Tip: include *what*, *where*, *since when*, *impact*."
-        )
+        st.caption(f"{len(desc)}/{max_len} characters • Tip: include *what*, *where*, *since when*, *impact*.")
 
         # 5) Upload photo
         st.subheader("📸 Upload Photo")
@@ -995,10 +1005,10 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Preview", use_container_width=True)
 
-        # 6) Map (kept in required order; already collapsible)
+        # 6) Map
         render_map_iframe()
 
-        # 7) Submit button (last)
+        # ✅ Review (still inside card)
         with st.expander("🔎 Review your report", expanded=False):
             st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
             st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
@@ -1006,9 +1016,10 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
             st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
 
+        # 7) Submit button (last)
         submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
-    # --- Submit handling stays outside the container (logic stays identical)
+    # --- Submit handling outside the card
     if not submitted:
         return
 
@@ -1052,7 +1063,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         "issue_photo",
     ]:
         st.session_state.pop(k, None)
-
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
     """Format submissions data for user-friendly display."""
