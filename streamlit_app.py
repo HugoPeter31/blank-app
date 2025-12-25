@@ -13,11 +13,6 @@ from __future__ import annotations
 # - All database writes use transactions (`with con:`) to keep updates atomic.
 # - Time handling uses a single timezone source to prevent subtle mismatches.
 # - Input normalization happens before validation so common user formats work.
-#
-# Important Streamlit UX note:
-# - Widgets inside `st.form(...)` do NOT rerun on each keystroke; changes apply on submit.
-#   Therefore, anything that must react immediately (e.g., SLA info, live char counter)
-#   must be rendered OUTSIDE the form.
 # ============================================================================
 
 # ============================================================================
@@ -1072,7 +1067,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             height=110,
             key="issue_description",
         ).strip()
-        st.caption(f"{len(desc)}/{max_len} characters • Tip: include *what*, *where*, *since when*, *impact*.")
 
         st.subheader("📸 Upload Photo")
         uploaded_file = st.file_uploader(
