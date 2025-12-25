@@ -948,9 +948,21 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             key="issue_priority",
             help="Used to determine the SLA target handling time.",
         )
+
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
-        sla_part = f"Service Level Agreement (SLA): {sla_hours}h" if sla_hours is not None else "SLA: n/a"
-        st.caption(f"{sla_part}")
+        if sla_hours is not None:
+            target_dt = now_zurich() + timedelta(hours=int(sla_hours))
+            st.info(
+                f"⏱️ **Target handling time:** within **{sla_hours} hours** "
+                f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                icon="ℹ️",
+            )
+        else:
+            st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
+
+
+
+        
         
         desc = st.text_area(
             "Problem Description*",
