@@ -1586,40 +1586,40 @@ def page_booking(con: sqlite3.Connection) -> None:
         st.info("Select an available asset to create a booking.")
         return
 
-st.divider()
-st.subheader("👤 My Bookings")
-
-my_name = st.text_input(
-    "Enter your name to view your upcoming bookings",
-    placeholder="e.g., Max Muster",
-    key="my_bookings_name",
-).strip()
-
-if not my_name:
-    st.caption("Tip: Use the exact same name you used when booking.")
-else:
-    try:
-        my_df = fetch_future_bookings_for_user(con, my_name)
-        if my_df.empty:
-            st.info("No upcoming bookings found for this name.")
-        else:
-            st.dataframe(
-                format_user_bookings_table(my_df),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            csv_bytes = my_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download my bookings (CSV)",
-                data=csv_bytes,
-                file_name=f"my_bookings_{now_zurich().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-    except Exception as e:
-        st.error(f"Failed to load your bookings: {e}")
-        logger.error("My bookings load error: %s", e)
+    st.divider()
+    st.subheader("👤 My Bookings")
+    
+    my_name = st.text_input(
+        "Enter your name to view your upcoming bookings",
+        placeholder="e.g., Max Muster",
+        key="my_bookings_name",
+    ).strip()
+    
+    if not my_name:
+        st.caption("Tip: Use the exact same name you used when booking.")
+    else:
+        try:
+            my_df = fetch_future_bookings_for_user(con, my_name)
+            if my_df.empty:
+                st.info("No upcoming bookings found for this name.")
+            else:
+                st.dataframe(
+                    format_user_bookings_table(my_df),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    
+                csv_bytes = my_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download my bookings (CSV)",
+                    data=csv_bytes,
+                    file_name=f"my_bookings_{now_zurich().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+        except Exception as e:
+            st.error(f"Failed to load your bookings: {e}")
+            logger.error("My bookings load error: %s", e)
 
 
     st.divider()
