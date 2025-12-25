@@ -1340,6 +1340,9 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 def page_booking(con: sqlite3.Connection) -> None:
     """Display asset booking interface with availability checking."""
     st.header("📅 Book an Asset")
+    if st.session_state.pop("booking_success_toast", False):
+        st.toast("Booking confirmed ✅", icon="📅")
+
 
     try:
         sync_asset_statuses_from_bookings(con)
@@ -1550,14 +1553,9 @@ def page_booking(con: sqlite3.Connection) -> None:
 
         sync_asset_statuses_from_bookings(con)
 
-        st.success(
-            f"🎉 **Booking Confirmed!**\n\n"
-            f"- Asset: {selected_asset['asset_name']}\n"
-            f"- Date: {start_dt.strftime('%A, %d %B %Y')}\n"
-            f"- Time: {start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}\n"
-            f"- Duration: {duration_hours} hour{'s' if duration_hours > 1 else ''}"
-        )
+        st.session_state["booking_success_toast"] = True
         st.rerun()
+
 
     except Exception as e:
         st.error(f"Failed to create booking: {e}")
