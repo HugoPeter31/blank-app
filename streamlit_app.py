@@ -1655,8 +1655,10 @@ def page_assets(con: sqlite3.Connection) -> None:
                 with con:
                     con.execute("UPDATE assets SET location_id = ? WHERE asset_id = ?", (new_location_id, asset_id))
 
-                st.session_state["asset_move_success_toast"] = True     # Store a short success flag so the confirmation survives st.rerun()
+                st.toast("Asset moved ✅", icon="🚚")
+                st.session_state["asset_move_success_toast"] = True
                 st.rerun()
+
 
             except Exception as e:
                 st.error(f"Failed to move asset: {e}")
