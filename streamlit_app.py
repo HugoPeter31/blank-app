@@ -1000,11 +1000,11 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
         # 7) Submit button (last)
         with st.expander("🔎 Review your report", expanded=False):
-        st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
-        st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
-        st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
-        st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
-        st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
+            st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
+            st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
+            st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
+            st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
+            st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
 
         submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
