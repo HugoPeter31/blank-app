@@ -28,7 +28,7 @@ The application enables members of the HSG community to report facility-related 
 ## How to Run the Application
 ```bash
 pip install streamlit pandas pytz
-streamlit run streamlit_app.py
+streamlit run streamlit_app.py```
 
 ---
 
