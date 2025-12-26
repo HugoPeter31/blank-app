@@ -1147,6 +1147,14 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     submitted = False
 
     with bordered_container(key="issue_form_card"):
+        # Priority selection OUTSIDE the form
+        st.selectbox(
+            "Priority Level*",
+            options=IMPORTANCE_LEVELS,
+            key="issue_priority",
+            help=HELP_TEXTS["priority"],
+        )
+
         # Form makes input + submit atomic: Streamlit only "commits" values when user clicks submit.
         with st.form("issue_submit_form", clear_on_submit=False):
             st.subheader("👤 Your Information")
@@ -1192,13 +1200,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
             with c4:
                 st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
-
-            st.selectbox(
-                "Priority Level*",
-                options=IMPORTANCE_LEVELS,
-                key="issue_priority",
-                help=HELP_TEXTS["priority"],
-            )
 
             sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
             if sla_hours is not None:
