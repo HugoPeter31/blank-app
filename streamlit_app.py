@@ -1120,13 +1120,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """User-facing issue submission flow (UI intentionally kept simple)."""
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
-       
-    # Basic rate limiting to discourage spam / accidental double-submits.
-    last_time = st.session_state.get("last_submission_time")
-    if isinstance(last_time, datetime):
-        if (now_zurich() - last_time).total_seconds() < 30:
-            st.warning("⚠️ Please wait 30 seconds before submitting another issue.")
-            return
 
     # Defaults are set once so reruns remain deterministic (avoids KeyErrors on session_state).
     st.session_state.setdefault("issue_name", "")
@@ -1264,9 +1257,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
     subject, body = confirmation_email_text(sub.name.strip(), sub.importance)
     ok, msg = send_email(sub.hsg_email, subject, body, config=config)
-
-    # Store timestamp so users can't accidentally spam the form on reruns.
-    st.session_state["last_submission_time"] = now_zurich()
 
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(sub.importance)
     submitted_at = now_zurich().strftime("%Y-%m-%d %H:%M")
