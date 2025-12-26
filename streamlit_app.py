@@ -769,6 +769,8 @@ def update_issue_admin_fields(
                 """,
                 (int(issue_id), old_status, new_status, updated_at),
             )
+
+
 def insert_submission(con: sqlite3.Connection, sub: Submission) -> int:
     """Insert a new issue submission (single transaction for atomicity).
 
