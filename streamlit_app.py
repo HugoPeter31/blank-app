@@ -348,6 +348,11 @@ def get_connection() -> sqlite3.Connection:
     """
     con = sqlite3.connect(DB_PATH, check_same_thread=False)
     con.execute("PRAGMA foreign_keys = ON")
+    
+    # Better concurrency for Streamlit reruns (reduces "database is locked")
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA busy_timeout = 3000")
+    
     return con
 
 
@@ -396,6 +401,10 @@ def init_db(con: sqlite3.Connection) -> None:
             """
         )
 
+        # Indexes for faster filtering/sorting in dashboards
+        con.execute("CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_submissions_created_at ON submissions(created_at)")
+
 
 def init_booking_table(con: sqlite3.Connection) -> None:
     """Create booking table (idempotent)."""
@@ -412,6 +421,9 @@ def init_booking_table(con: sqlite3.Connection) -> None:
             )
             """
         )
+
+        # Index for fast overlap checks (availability)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_bookings_asset_time ON bookings(asset_id, start_time, end_time)")
 
 
 def init_assets_table(con: sqlite3.Connection) -> None:
@@ -801,7 +813,12 @@ def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> 
     msg["Subject"] = subject
     msg["From"] = config.from_email
     msg["To"] = to_email
+    if config.admin_inbox:
+        # Admin gets a copy without being visible as a normal recipient
+        msg["Bcc"] = config.admin_inbox
+    
     msg.set_content(body)
+
 
     recipients = [to_email]
     if config.admin_inbox:
@@ -814,7 +831,7 @@ def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> 
             smtp.starttls()
             smtp.ehlo()
             smtp.login(config.smtp_username, config.smtp_password)
-            smtp.send_message(msg, to_addrs=recipients)
+            smtp.send_message(msg)
         return True, "Email sent successfully."
     except Exception as exc:
         logger.exception("Email sending failed")
@@ -2077,7 +2094,7 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
 
         # Extra confirmation reduces accidental “Resolved” clicks (important for notifications).
         confirm_resolution = True
-        if new_status == "Resolved":
+        if old_status != "Resolved" and new_status == "Resolved":
             confirm_resolution = st.checkbox("✓ Confirm issue resolution (will send notification email)", value=False)
 
         submitted = st.form_submit_button("Save changes", type="primary", use_container_width=True)
