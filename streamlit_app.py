@@ -1220,8 +1220,8 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
             submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
-        if not submitted:
-            return
+    if not submitted:
+         return
 
     sub = Submission(
         name=str(st.session_state["issue_name"]).strip(),
