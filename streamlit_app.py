@@ -1109,7 +1109,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     st.session_state.setdefault("issue_description", "")
 
     
-        email_raw = ""
+    email_raw = ""
     room_raw = ""
 
     with bordered_container(key="issue_form_card"):
