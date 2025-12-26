@@ -909,8 +909,8 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
     since_dt = now_dt - timedelta(days=7)
 
     df = df_all.copy()
-    df["created_at_dt"] = pd.to_datetime(df.get("created_at"), errors="coerce")
-    df["resolved_at_dt"] = pd.to_datetime(df.get("resolved_at"), errors="coerce")
+    df["created_at_dt"] = pd.to_datetime(df.get("created_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
+    df["resolved_at_dt"] = pd.to_datetime(df.get("resolved_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
 
     new_last_7d = df[df["created_at_dt"] >= since_dt]
     resolved_last_7d = df[(df["resolved_at_dt"].notna()) & (df["resolved_at_dt"] >= since_dt)]
@@ -1282,6 +1282,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         "issue_photo",
     ]:
         st.session_state.pop(k, None)
+    st.rerun()
 
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -1448,7 +1449,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     days = date_range_label_to_days[date_range_choice]
     if days is not None:
         cutoff = now_zurich() - timedelta(days=int(days))
-        filtered_df["created_at_dt"] = pd.to_datetime(filtered_df.get("created_at"), errors="coerce")
+        filtered_df["created_at_dt"] = pd.to_datetime(filtered_df.get("created_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
         filtered_df = filtered_df[filtered_df["created_at_dt"].notna() & (filtered_df["created_at_dt"] >= cutoff)].copy()
         filtered_df = filtered_df.drop(columns=["created_at_dt"], errors="ignore")
 
@@ -2192,9 +2193,9 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             with col_stat1:
                 st.metric("High Priority", len(issues[issues["importance"] == "High"]))
             with col_stat2:
-                created_dt = pd.to_datetime(issues.get("created_at"), errors="coerce")
+                created_dt = pd.to_datetime(issues.get("created_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
                 if created_dt.notna().any():
-                    avg_age_days = (now_zurich() - created_dt).dt.days.mean()
+                    avg_age_days = ((now_zurich() - created_dt).dt.total_seconds() / 86400.0).mean()
                     st.metric("Avg. Issue Age", f"{avg_age_days:.1f} days")
                 else:
                     st.metric("Avg. Issue Age", "N/A")
