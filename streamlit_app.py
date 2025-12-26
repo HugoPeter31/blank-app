@@ -1119,6 +1119,17 @@ def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """User-facing issue submission flow (UI intentionally kept simple)."""
     st.header("📝 Report a Facility Issue")
+    # Toast after successful submit (shown on next rerun)
+    if st.session_state.pop("issue_submit_success_toast", False):
+        details = st.session_state.pop("issue_submit_success_details", None)
+        if details:
+            st.toast(
+                f"Issue #{details['id']} reported ✅ • {details['room']} • {details['priority']}",
+                icon="📝",
+            )
+        else:
+            st.toast("Issue reported successfully ✅", icon="📝")
+
     st.caption("Fields marked with * are mandatory.")
 
     # Defaults are set once so reruns remain deterministic (avoids KeyErrors on session_state).
@@ -1272,7 +1283,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     )
 
     if ok:
-        st.balloons()
         st.toast("Confirmation email sent!", icon="📧")
     else:
         st.warning(f"Note: Email notification failed: {msg}")
@@ -1289,6 +1299,14 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
         "issue_photo",
     ]:
         st.session_state.pop(k, None)
+
+    # Prepare toast message for next rerun (like booking page)
+    st.session_state["issue_submit_success_details"] = {
+        "id": submission_id,
+        "room": normalize_room(sub.room_number),
+        "priority": sub.importance,
+    }
+    st.session_state["issue_submit_success_toast"] = True
     st.rerun()
 
 
