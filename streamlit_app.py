@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-"""
-REPORTING TOOL @ HSG (Streamlit)
+""" REPORTING TOOL @ HSG (Streamlit)
 
 Purpose: Facility issue reporting, asset booking, and tracking system
 Developed by: Arthur Lavric & Fabio Patierno
@@ -12,8 +11,7 @@ Why this file is structured this way:
   - keep side effects (DB writes, email sending) behind explicit user actions
 - We normalize and validate user input before persisting it to prevent duplicates
   and reduce downstream special-case logic.
-- Comments focus on intent ("why") rather than restating obvious Python syntax.
-"""
+- Comments focus on intent ("why") rather than restating obvious Python syntax."""
 
 # ============================================================================
 # IMPORTS
