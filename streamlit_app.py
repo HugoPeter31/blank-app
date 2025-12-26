@@ -49,9 +49,16 @@ ISSUE_TYPES = [
     "Lighting issues",
     "Sanitary problems",
     "Heating, ventilation or air conditioning issues",
-    "Cleaning needs due to heavy soiling",
-    "Network/internet problems",
-    "Issues with/lack of IT equipment",
+    "Indoor climate or air quality issues",
+    "Cleaning or hygiene issues",
+    "Network or internet problems",
+    "IT or AV equipment malfunction",
+    "Power supply or electrical outlet issues",
+    "Furniture or room equipment damage",
+    "Doors, windows or locks malfunction",
+    "Noise disturbance",
+    "Health or safety hazard",
+    "Other facility-related issue",
 ]
 
 IMPORTANCE_LEVELS = ["Low", "Medium", "High"]
