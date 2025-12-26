@@ -758,35 +758,34 @@ def update_issue_admin_fields(
                 (int(issue_id), old_status, new_status, updated_at),
             )
 
-
     def insert_submission(con: sqlite3.Connection, sub: Submission) -> int:
-    """Insert a new issue submission (single transaction for atomicity).
-
-    Returns:
-        int: The inserted submission ID (for user-facing confirmation).
-    """
-    created_at = now_zurich_str()
-
-    with con:
-        cur = con.execute(
-            """
-            INSERT INTO submissions
-            (name, hsg_email, issue_type, room_number, importance, status,
-             user_comment, created_at, updated_at, assigned_to, resolved_at)
-            VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, NULL, NULL)
-            """,
-            (
-                sub.name.strip(),
-                sub.hsg_email.strip().lower(),
-                sub.issue_type,
-                normalize_room(sub.room_number),
-                sub.importance,
-                sub.user_comment.strip(),
-                created_at,
-                created_at,
-            ),
-        )
-        return int(cur.lastrowid)
+        """Insert a new issue submission (single transaction for atomicity).
+    
+        Returns:
+            int: The inserted submission ID (for user-facing confirmation).
+        """
+        created_at = now_zurich_str()
+    
+        with con:
+            cur = con.execute(
+                """
+                INSERT INTO submissions
+                (name, hsg_email, issue_type, room_number, importance, status,
+                 user_comment, created_at, updated_at, assigned_to, resolved_at)
+                VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, NULL, NULL)
+                """,
+                (
+                    sub.name.strip(),
+                    sub.hsg_email.strip().lower(),
+                    sub.issue_type,
+                    normalize_room(sub.room_number),
+                    sub.importance,
+                    sub.user_comment.strip(),
+                    created_at,
+                    created_at,
+                ),
+            )
+            return int(cur.lastrowid)
 
 
 # ============================================================================
@@ -983,6 +982,11 @@ def show_logo() -> None:
     except FileNotFoundError:
         st.sidebar.warning("Logo image not found. Ensure the logo file is in the repository root.")
 
+def show_empty_state(icon: str, title: str, message: str) -> None:
+    """Show a friendly empty state without relying on custom HTML."""
+    with st.container(border=True):
+        st.markdown(f"## {icon} {title}")
+        st.caption(message)
 
 def render_map_iframe() -> None:
     """Embed the campus map as a reference (kept in an expander to avoid UI clutter)."""
@@ -1089,6 +1093,13 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """User-facing issue submission flow (UI intentionally kept simple)."""
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
+       
+    # Basic rate limiting to discourage spam / accidental double-submits.
+    last_time = st.session_state.get("last_submission_time")
+    if isinstance(last_time, datetime):
+        if (now_zurich() - last_time).total_seconds() < 30:
+            st.warning("⚠️ Please wait 30 seconds before submitting another issue.")
+            return
 
     # Defaults are set once so reruns remain deterministic (avoids KeyErrors on session_state).
     st.session_state.setdefault("issue_name", "")
@@ -1116,7 +1127,7 @@ with bordered_container(key="issue_form_card"):
                     "Email Address*",
                     placeholder="firstname.lastname@student.unisg.ch",
                     key="issue_email",
-                    help="Must be @unisg.ch or @student.unisg.ch",
+                    help=HELP_TEXTS["email"],
                 )
                 .strip()
                 .lower()
@@ -1129,7 +1140,13 @@ with bordered_container(key="issue_form_card"):
 
         c3, c4 = st.columns(2)
         with c3:
-            room_raw = st.text_input("Room Number*", placeholder="e.g., A 09-001", key="issue_room").strip()
+            room_raw = st.text_input(
+                "Room Number*",
+                placeholder="e.g., A 09-001",
+                key="issue_room",
+                help=HELP_TEXTS["room"],
+            ).strip()
+
             if room_raw:
                 normalized = normalize_room(room_raw)
 
@@ -1146,7 +1163,7 @@ with bordered_container(key="issue_form_card"):
             "Priority Level*",
             options=IMPORTANCE_LEVELS,
             key="issue_priority",
-            help="Used to determine the SLA target handling time.",
+            help=HELP_TEXTS["priority"],
         )
 
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
@@ -1166,6 +1183,7 @@ with bordered_container(key="issue_form_card"):
             placeholder="What happened? Where exactly? Since when? Any impact?",
             height=110,
             key="issue_description",
+            help=HELP_TEXTS["description"],
         )
 
         st.subheader("📸 Upload Photo")
@@ -1221,6 +1239,12 @@ with bordered_container(key="issue_form_card"):
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(sub.importance)
     submitted_at = now_zurich().strftime("%Y-%m-%d %H:%M")
 
+    # Store timestamp so users can't accidentally spam the form on reruns.
+    st.session_state["last_submission_time"] = now_zurich()
+
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(sub.importance)
+    submitted_at = now_zurich().strftime("%Y-%m-%d %H:%M")
+
     st.success("✅ Issue reported successfully!")
     st.info(
         f"**Details:**\n"
@@ -1236,6 +1260,7 @@ with bordered_container(key="issue_form_card"):
         st.toast("Confirmation email sent!", icon="📧")
     else:
         st.warning(f"Note: Email notification failed: {msg}")
+
 
     # Clear form state to reduce accidental duplicates after reruns/back/refresh.
     for k in [
@@ -1330,7 +1355,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     st.header("📋 Submitted Issues Dashboard")
 
     try:
-        df = fetch_submissions(con)
+        with st.spinner("📊 Loading issues..."):
+            df = fetch_submissions(con)
     except Exception as e:
         st.error(f"Failed to load submissions: {e}")
         logger.error("Database error in submitted issues: %s", e)
@@ -1350,7 +1376,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
         st.metric("High Priority", high_priority)
 
     if df.empty:
-        st.info("No issues have been submitted yet.")
+        show_empty_state("📭", "No Issues Found", "No issues have been submitted yet.")
         return
 
     st.subheader("🔍 Filter Options")
@@ -1833,7 +1859,7 @@ def page_assets(con: sqlite3.Connection) -> None:
         return
 
     if df.empty:
-        st.info("No assets available in the system.")
+        show_empty_state("📦", "No Assets Found", "No assets available in the system.")
         return
 
     st.subheader("📊 Asset Overview")
