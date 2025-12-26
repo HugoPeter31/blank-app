@@ -7,13 +7,15 @@ from __future__ import annotations
 # - Asset booking
 # - Asset tracking
 #
-# Authors: Arthur Lavric & Fabio Patierno
-#
-# Design notes (why it looks like this):
+# Design notes:
 # - Streamlit reruns the script frequently → cache expensive setup (config, DB connection).
 # - Side effects (DB writes, emails) only happen behind explicit user actions (buttons/forms).
 # - Inputs are normalized + validated before persistence to avoid duplicates and fragile edge-cases.
-# - Comments focus on intent (“why”), not on restating obvious Python syntax.
+#
+# Note:
+# - Admin page is protected via Streamlit secrets (ADMIN_PASSWORD).
+#
+# Authors: Arthur Lavric & Fabio Patierno
 
 # ============================================================================
 # IMPORTS
@@ -1020,10 +1022,18 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
         return text
     return text[: max_chars - 1] + "…"
 
-
 def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
-    """Use Streamlit-native borders (portable across environments; no custom CSS)."""
-    return st.container(border=True, key=key)
+    """Create a visually grouped container.
+
+    Why:
+    - Newer Streamlit versions support `border=True`.
+    - Older environments (graders/CI) may not → fallback avoids runtime crashes.
+    """
+    try:
+        return st.container(border=True, key=key)
+    except TypeError:
+        # Older Streamlit versions don't support the border argument.
+        return st.container(key=key)
 
 
 # ============================================================================
@@ -1045,7 +1055,9 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     email_raw = ""
     room_raw = ""
 
-    with bordered_container(key="issue_form_card"):
+with bordered_container(key="issue_form_card"):
+    # Form makes input + submit atomic: Streamlit only "commits" values when user clicks submit.
+    with st.form("issue_submit_form", clear_on_submit=False):
         st.subheader("👤 Your Information")
         c1, c2 = st.columns(2)
 
@@ -1064,7 +1076,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
                 .lower()
             )
 
-            # Immediate feedback reduces invalid submissions (cheaper than rejecting after submit).
             if email_raw and not valid_email(email_raw):
                 st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
 
@@ -1092,7 +1103,6 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             help="Used to determine the SLA target handling time.",
         )
 
-        # Make the SLA meaning explicit at the moment the user chooses priority.
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
         if sla_hours is not None:
             target_dt = now_zurich() + timedelta(hours=int(sla_hours))
@@ -1131,7 +1141,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
             st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
 
-        submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
     if not submitted:
         return
