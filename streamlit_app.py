@@ -2222,7 +2222,6 @@ def main() -> None:
         return
 
     st.title("Reporting Tool @ HSG")
-    st.caption("Facility issue reporting, booking, and tracking.")
 
     page_functions = {
         "Submission Form": lambda: page_submission_form(con, config=config),
