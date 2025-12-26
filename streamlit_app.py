@@ -996,7 +996,7 @@ def show_logo() -> None:
 
 def show_empty_state(icon: str, title: str, message: str) -> None:
     """Show a friendly empty state without relying on custom HTML."""
-    with st.container(border=True):
+    with bordered_container(key="empty_state"):
         st.markdown(f"## {icon} {title}")
         st.caption(message)
 
@@ -1043,9 +1043,8 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
-    out["start_time"] = pd.to_datetime(out.get("start_time"), errors="coerce")
-    out["end_time"] = pd.to_datetime(out.get("end_time"), errors="coerce")
-
+    out["start_time"] = parse_iso_series_to_zurich(out["start_time"])
+    out["end_time"] = parse_iso_series_to_zurich(out["end_time"])
     out = out.dropna(subset=["start_time", "end_time"]).sort_values(by=["start_time"])
     out["start_time"] = out["start_time"].dt.strftime("%Y-%m-%d %H:%M")
     out["end_time"] = out["end_time"].dt.strftime("%Y-%m-%d %H:%M")
@@ -1328,7 +1327,7 @@ def render_charts(df: pd.DataFrame) -> None:
         return
 
     df_local = df.copy()
-    df_local["created_at_dt"] = pd.to_datetime(df_local.get("created_at"), errors="coerce")
+    df_local["created_at_dt"] = parse_iso_series_to_zurich(df_local["created_at"])
 
     tab1, tab2, tab3, tab4 = st.tabs(
         ["📊 Issue Types", "📅 Daily Trends", "🎯 Priority Levels", "📈 Status Distribution"]
@@ -1465,8 +1464,8 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     # Optional KPI: only computed when the required columns exist and parse cleanly.
     resolved_df = filtered_df[filtered_df["status"] == "Resolved"].copy()
     if not resolved_df.empty and "created_at" in resolved_df.columns and "resolved_at" in resolved_df.columns:
-        resolved_df["created_at_dt"] = pd.to_datetime(resolved_df["created_at"], errors="coerce")
-        resolved_df["resolved_at_dt"] = pd.to_datetime(resolved_df["resolved_at"], errors="coerce")
+        resolved_df["created_at_dt"] = parse_iso_series_to_zurich(resolved_df["created_at"])
+        resolved_df["resolved_at_dt"] = parse_iso_series_to_zurich(resolved_df["resolved_at"])
         resolved_df = resolved_df.dropna(subset=["created_at_dt", "resolved_at_dt"])
         if not resolved_df.empty:
             resolved_df["resolution_hours"] = (
@@ -2011,7 +2010,7 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
                 subject, body = build_weekly_report(df_all)
                 ok, msg = send_admin_report_email(subject, body, config=config)
                 if ok:
-                    mark_report_sent(con, "weekly_manual")
+                    mark_report_sent(con, "weekly")
                     st.success("Weekly report sent successfully!")
                 else:
                     st.warning(f"Report sending failed: {msg}")
