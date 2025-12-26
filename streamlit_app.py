@@ -11,7 +11,8 @@ Why this file is structured this way:
   - keep side effects (DB writes, email sending) behind explicit user actions
 - We normalize and validate user input before persisting it to prevent duplicates
   and reduce downstream special-case logic.
-- Comments focus on intent ("why") rather than restating obvious Python syntax."""
+- Comments focus on intent ("why") rather than restating obvious Python syntax.
+"""
 
 # ============================================================================
 # IMPORTS
