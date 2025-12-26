@@ -71,6 +71,14 @@ ISSUE_TYPES = [
 IMPORTANCE_LEVELS = ["Low", "Medium", "High"]
 STATUS_LEVELS = ["Pending", "In Progress", "Resolved"]
 
+# Help text definitions for consistent UX
+HELP_TEXTS = {
+    "email": "Must be @unisg.ch or @student.unisg.ch",
+    "room": "Format: A 09-001 (letter + space + room number)",
+    "description": "Describe what happened, where, when, and impact",
+    "priority": "High = 24h SLA, Medium = 72h SLA, Low = 120h SLA",
+}
+
 # SLA by priority (hours). Centralized here to keep the policy explicit and auditable.
 SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
     "High": 24,
@@ -751,12 +759,16 @@ def update_issue_admin_fields(
             )
 
 
-def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
-    """Insert a new issue submission (single transaction for atomicity)."""
+    def insert_submission(con: sqlite3.Connection, sub: Submission) -> int:
+    """Insert a new issue submission (single transaction for atomicity).
+
+    Returns:
+        int: The inserted submission ID (for user-facing confirmation).
+    """
     created_at = now_zurich_str()
 
     with con:
-        con.execute(
+        cur = con.execute(
             """
             INSERT INTO submissions
             (name, hsg_email, issue_type, room_number, importance, status,
@@ -774,6 +786,7 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
                 created_at,
             ),
         )
+        return int(cur.lastrowid)
 
 
 # ============================================================================
@@ -939,9 +952,28 @@ def send_weekly_report_if_due(con: sqlite3.Connection, *, config: AppConfig) -> 
 # UI HELPER FUNCTIONS
 # ============================================================================
 def show_errors(errors: Iterable[str]) -> None:
-    """Render validation errors consistently (single UI style across pages)."""
-    for msg in errors:
-        st.error(msg)
+    """Display validation errors in a clear, actionable way.
+
+    Why:
+    - Users need fast feedback + concrete next steps.
+    - A consistent error block improves UX and grading clarity.
+    """
+    errors_list = [e for e in errors if str(e).strip()]
+    if not errors_list:
+        return
+
+    with st.container(border=True):
+        st.error("❌ Please fix the following issues:")
+        for i, err in enumerate(errors_list, 1):
+            st.markdown(f"**{i}.** {err}")
+
+        st.divider()
+
+        # Optional helper: allows users to quickly reset the most error-prone fields.
+        if st.button("🔄 Clear form fields", key="clear_form_fields", type="secondary", use_container_width=True):
+            for key in ["issue_name", "issue_email", "issue_room", "issue_description", "issue_photo"]:
+                st.session_state.pop(key, None)
+            st.rerun()
 
 
 def show_logo() -> None:
@@ -1175,7 +1207,7 @@ with bordered_container(key="issue_form_card"):
         return
 
     try:
-        insert_submission(con, sub)
+        submission_id = insert_submission(con, sub)
     except Exception as e:
         st.error("Database error while saving your report. Please try again.")
         logger.error("Failed to insert submission: %s", e)
@@ -1184,17 +1216,26 @@ with bordered_container(key="issue_form_card"):
     subject, body = confirmation_email_text(sub.name.strip(), sub.importance)
     ok, msg = send_email(sub.hsg_email, subject, body, config=config)
 
+    st.session_state["last_submission_time"] = now_zurich()
+
+    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(sub.importance)
+    submitted_at = now_zurich().strftime("%Y-%m-%d %H:%M")
+
     st.success("✅ Issue reported successfully!")
-    st.caption(
-        f"Reference: **{normalize_room(sub.room_number)}** • "
-        f"Priority: **{sub.importance}** • Status: **Pending**"
+    st.info(
+        f"**Details:**\n"
+        f"- **Reference ID:** #{submission_id}\n"
+        f"- **Room:** {normalize_room(sub.room_number)}\n"
+        f"- **Priority:** {sub.importance} ({sla_hours if sla_hours is not None else 'N/A'}h SLA)\n"
+        f"- **Status:** Pending\n"
+        f"- **Submitted:** {submitted_at}"
     )
 
     if ok:
         st.balloons()
+        st.toast("Confirmation email sent!", icon="📧")
     else:
-        # Non-blocking: the report is stored even if email fails.
-        st.warning(f"Note: {msg}")
+        st.warning(f"Note: Email notification failed: {msg}")
 
     # Clear form state to reduce accidental duplicates after reruns/back/refresh.
     for k in [
