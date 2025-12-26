@@ -261,10 +261,13 @@ def iso_to_dt(value: str) -> datetime | None:
 def parse_iso_series_to_zurich(values: pd.Series) -> pd.Series:
     """Parse ISO timestamp strings into Europe/Zurich timezone (best-effort).
 
-    Why:
-    - DB timestamps may be stored with offsets (+01:00/+02:00) OR as naive strings.
-    - We want deterministic local times in the UI.
-    - One malformed legacy row must not crash the whole page.
+    Handles three timestamp formats:
+    1. Naive strings (assumed Zurich local time)
+    2. UTC-aware timestamps
+    3. Zurich-aware timestamps (convert to local)
+    
+    Returns:
+        pd.Series: Timezone-aware timestamps, NaT for unparsable values
     """
     s = pd.to_datetime(values, errors="coerce")
 
@@ -367,7 +370,7 @@ def get_connection() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, check_same_thread=False)
     con.execute("PRAGMA foreign_keys = ON")
     
-    # Better concurrency for Streamlit reruns (reduces "database is locked")
+    # Streamlit can trigger near-parallel reads/writes on reruns; WAL + busy_timeout reduces transient lock errors.
     con.execute("PRAGMA journal_mode = WAL")
     con.execute("PRAGMA busy_timeout = 3000")
     
@@ -1201,6 +1204,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
                     f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
                     icon="ℹ️",
                 )
+                st.caption("SLA = Service Level Agreement (service target time).")
             else:
                 st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
 
@@ -2206,7 +2210,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
             with col_stat1:
                 st.metric("High Priority", len(issues[issues["importance"] == "High"]))
             with col_stat2:
-                created_dt = pd.to_datetime(issues.get("created_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
+                created_dt = parse_iso_series_to_zurich(issues["created_at"])
                 if created_dt.notna().any():
                     avg_age_days = ((now_zurich() - created_dt).dt.total_seconds() / 86400.0).mean()
                     st.metric("Avg. Issue Age", f"{avg_age_days:.1f} days")
