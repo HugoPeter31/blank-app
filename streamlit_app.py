@@ -973,7 +973,7 @@ def show_errors(errors: Iterable[str]) -> None:
     if not errors_list:
         return
 
-    with st.container(border=True):
+    with bordered_container(key="error_box"):
         st.error("❌ Please fix the following issues:")
         for i, err in enumerate(errors_list, 1):
             st.markdown(f"**{i}.** {err}")
@@ -1087,15 +1087,14 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
     """Create a visually grouped container.
 
-    Why:
-    - Newer Streamlit versions support `border=True`.
-    - Older environments (graders/CI) may not → fallback avoids runtime crashes.
+    Compatibility note:
+    - Some Streamlit versions don't support `border=` and/or `key=` on containers.
+    - We keep the function signature stable (key stays), but we don't pass it to st.container.
     """
     try:
-        return st.container(border=True, key=key)
+        return st.container(border=True)
     except TypeError:
-        # Older Streamlit versions don't support the border argument.
-        return st.container(key=key)
+        return st.container()
 
 
 # ============================================================================
@@ -1124,6 +1123,8 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     
     email_raw = ""
     room_raw = ""
+    
+    submitted = False
 
     with bordered_container(key="issue_form_card"):
         # Form makes input + submit atomic: Streamlit only "commits" values when user clicks submit.
