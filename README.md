@@ -29,3 +29,5 @@ The application enables members of the HSG community to report facility-related 
 ```bash
 pip install streamlit pandas pytz
 streamlit run streamlit_app.py
+
+*Developed by: Arthur Lavric & Fabio Patierno*
