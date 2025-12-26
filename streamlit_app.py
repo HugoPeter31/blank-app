@@ -2,16 +2,18 @@ from __future__ import annotations
 
 # REPORTING TOOL @ HSG (Streamlit)
 #
-# Purpose: Facility issue reporting, asset booking, and tracking system
-# Developed by: Arthur Lavric & Fabio Patierno
+# Purpose:
+# - Facility issue reporting
+# - Asset booking
+# - Asset tracking
 #
-# Why this file is structured this way:
-# - Streamlit reruns the script frequently. We therefore:
-#   - cache expensive resources (config, DB connection) to avoid repeated setup work
-#   - keep side effects (DB writes, email sending) behind explicit user actions
-# - We normalize and validate user input before persisting it to prevent duplicates
-#   and reduce downstream special-case logic.
-# - Comments focus on intent ("why") rather than restating obvious Python syntax.
+# Authors: Arthur Lavric & Fabio Patierno
+#
+# Design notes (why it looks like this):
+# - Streamlit reruns the script frequently → cache expensive setup (config, DB connection).
+# - Side effects (DB writes, emails) only happen behind explicit user actions (buttons/forms).
+# - Inputs are normalized + validated before persistence to avoid duplicates and fragile edge-cases.
+# - Comments focus on intent (“why”), not on restating obvious Python syntax.
 
 # ============================================================================
 # IMPORTS
@@ -32,11 +34,13 @@ import streamlit as st
 # ============================================================================
 # CONFIGURATION & CONSTANTS
 # ============================================================================
-APP_TZ = pytz.timezone("Europe/Zurich")  # Single timezone source prevents naive/aware bugs.
+# One timezone source prevents subtle “naive vs aware” datetime bugs across DB, UI and SLA logic.
+APP_TZ = pytz.timezone("Europe/Zurich")
+
 DB_PATH = "hsg_reporting.db"
 LOGO_PATH = "HSG-logo-new.png"
 
-# Centralizing UI/behavior constants avoids "magic numbers" spread across the code.
+# Keep “magic numbers” centralized so behavior is easy to tune and review.
 DESCRIPTION_PREVIEW_CHARS = 90
 MAX_ISSUE_DESCRIPTION_CHARS = 500
 
@@ -44,7 +48,7 @@ MAP_IFRAME_URL = (
     "https://use.mazemap.com/embed.html?v=1&zlevel=1&center=9.373611,47.429708&zoom=14.7&campusid=710"
 )
 
-# Predefined issue types
+# Predefined issue types (kept as a single list so dropdowns and analytics stay consistent).
 ISSUE_TYPES = [
     "Lighting issues",
     "Sanitary problems",
@@ -64,19 +68,20 @@ ISSUE_TYPES = [
 IMPORTANCE_LEVELS = ["Low", "Medium", "High"]
 STATUS_LEVELS = ["Pending", "In Progress", "Resolved"]
 
-# Service Level Agreement (SLA) definitions in hours
+# SLA by priority (hours). Centralized here to keep the policy explicit and auditable.
 SLA_HOURS_BY_IMPORTANCE: dict[str, int] = {
     "High": 24,
     "Medium": 72,
     "Low": 120,
 }
 
-# Validation patterns for user inputs
+# Validation patterns:
+# - Restrict email domains to reduce risk of sending notifications to unintended recipients.
+# - Room pattern allows both “A09-001” and “A 09-001”; normalization canonicalizes it.
 EMAIL_PATTERN = re.compile(r"^[\w.]+@(student\.)?unisg\.ch$")
-# Accept both "A 09-001" and "A09-001"; normalization will standardize.
 ROOM_PATTERN = re.compile(r"^[A-Z]\s?\d{2}-\d{3}$")
 
-# Location mapping for asset tracking
+# Location mapping used by the tracking view (labels matter more than coordinates for this app).
 LOCATIONS = {
     "R_A_09001": {"label": "Room A 09-001", "x": 10, "y": 20},
     "H_A_09001": {"label": "Hallway near Room A 09-001", "x": 15, "y": 25},
@@ -95,7 +100,7 @@ LOCATIONS = {
 # ============================================================================
 # LOGGING CONFIGURATION
 # ============================================================================
-# Streamlit reruns frequently; guarding prevents duplicate handlers on rerun.
+# Streamlit reruns can re-add handlers; guard to avoid duplicated log lines.
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
@@ -107,9 +112,9 @@ if not logger.handlers:
 class Submission:
     """Validated payload for a user-submitted issue.
 
-    Why frozen:
-    - After validation, this object should not change. This reduces accidental
-      state mutations during Streamlit reruns.
+    Frozen on purpose:
+    - After validation, the record should be treated as immutable to avoid
+      accidental state drift during Streamlit reruns.
     """
 
     name: str
@@ -122,11 +127,11 @@ class Submission:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """App configuration loaded from Streamlit secrets.
+    """Runtime configuration sourced from Streamlit secrets.
 
-    Why centralized:
-    - Keeps configuration access predictable and easier to test.
-    - Avoids scattering `st.secrets[...]` across UI/business logic.
+    Centralizing secrets access:
+    - Keeps business logic independent from Streamlit’s secrets API.
+    - Makes it obvious which settings exist (useful for grading and debugging).
     """
 
     smtp_server: str
@@ -147,11 +152,10 @@ class AppConfig:
 # SECRETS MANAGEMENT (Streamlit Cloud Secrets)
 # ============================================================================
 def get_secret(key: str, default: str | None = None) -> str:
-    """Retrieve a secret value safely.
+    """Read a secret safely (fail-fast for required keys).
 
     Why:
-    - Missing required secrets should fail fast with a clear UI message, rather
-      than causing subtle runtime errors later.
+    - Missing secrets should be a clear configuration error, not a late runtime crash.
     """
     if key in st.secrets:
         return str(st.secrets[key])
@@ -165,9 +169,9 @@ def get_secret(key: str, default: str | None = None) -> str:
 def get_config() -> AppConfig:
     """Load secrets once per session.
 
-    Why:
-    - Loading at import time can crash before Streamlit can render errors.
-    - Caching prevents repeated parsing on reruns.
+    Why caching:
+    - Streamlit reruns frequently; parsing secrets repeatedly is wasted work.
+    - Loading inside the app lifecycle ensures Streamlit can show helpful errors.
     """
     smtp_server = get_secret("SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(get_secret("SMTP_PORT", "587"))
@@ -206,55 +210,45 @@ def get_config() -> AppConfig:
 # TIME HELPER FUNCTIONS
 # ============================================================================
 def now_zurich() -> datetime:
-    """Current time in the app timezone.
-
-    Why:
-    - Using one time source prevents mixed timezone/naive datetime issues.
-    """
+    """Return current time in the app timezone (single source of truth)."""
     return datetime.now(APP_TZ)
 
 
 def now_zurich_str() -> str:
-    """ISO timestamp for DB storage/logging (seconds precision)."""
+    """ISO timestamp for storage/logging (seconds precision keeps DB readable)."""
     return now_zurich().isoformat(timespec="seconds")
 
 
 def safe_localize(dt_naive: datetime) -> datetime:
-    """Localize a naive datetime into APP_TZ safely.
+    """Localize a naive datetime into APP_TZ, handling DST edge cases.
 
     Why:
-    - DST transitions can make local times ambiguous/non-existent.
-    - We choose deterministic fallbacks to avoid runtime crashes.
+    - DST changes can create ambiguous or non-existent local times.
+    - We choose deterministic fallbacks to keep the app stable.
     """
     try:
         return APP_TZ.localize(dt_naive, is_dst=None)
     except pytz.AmbiguousTimeError:
-        # Prefer standard time to keep ordering stable.
         return APP_TZ.localize(dt_naive, is_dst=False)
     except pytz.NonExistentTimeError:
-        # Push forward if the local time doesn't exist (spring forward).
         return APP_TZ.localize(dt_naive + timedelta(hours=1), is_dst=True)
 
 
 def iso_to_dt(value: str) -> datetime | None:
-    """Convert stored ISO timestamps into timezone-aware datetime.
-
-    Why:
-    - Historical DB rows may contain naive timestamps.
-    - SLA computations must not mix naive/aware times.
-    """
+    """Parse an ISO timestamp into an aware datetime (best-effort)."""
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
             return safe_localize(dt)
         return dt.astimezone(APP_TZ)
     except (TypeError, ValueError):
+        # Logging (not crashing) is intentional: old/invalid rows should not break the UI.
         logger.warning("Failed to parse datetime from value=%r", value)
         return None
 
 
 def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
-    """Calculate SLA target time from created timestamp + importance."""
+    """Compute SLA target timestamp based on creation time + priority."""
     created_dt = iso_to_dt(created_at_iso)
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(importance))
     if created_dt is None or sla_hours is None:
@@ -263,7 +257,7 @@ def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | N
 
 
 def is_room_location(location_id: str) -> bool:
-    """A room location is encoded with the 'R_' prefix."""
+    """Room locations are encoded with the 'R_' prefix (used for booking side-effects)."""
     return str(location_id).startswith("R_")
 
 
@@ -271,20 +265,12 @@ def is_room_location(location_id: str) -> bool:
 # VALIDATION FUNCTIONS
 # ============================================================================
 def valid_email(hsg_email: str) -> bool:
-    """Validate email format.
-
-    Why:
-    - We restrict to unisg domains to avoid sending emails to unintended recipients.
-    """
+    """Validate HSG email format (unisg domains only)."""
     return bool(EMAIL_PATTERN.fullmatch(hsg_email.strip()))
 
 
 def normalize_room(room_number: str) -> str:
-    """Normalize room number to canonical format.
-
-    Why:
-    - Prevents duplicates caused by inconsistent spacing/casing (e.g., A09-001 vs A 09-001).
-    """
+    """Normalize room strings to a canonical format to reduce duplicates."""
     raw = room_number.strip().upper()
     raw = re.sub(r"^([A-Z])(\d{2}-\d{3})$", r"\1 \2", raw)  # A09-001 -> A 09-001
     raw = re.sub(r"\s+", " ", raw)  # collapse whitespace
@@ -297,10 +283,10 @@ def valid_room_number(room_number: str) -> bool:
 
 
 def validate_submission_input(sub: Submission) -> list[str]:
-    """Validate all inputs for issue submission.
+    """Validate submission inputs before writing to the DB.
 
     Why:
-    - Avoids persisting partial/invalid records that later break dashboards and admin workflows.
+    - Prevents partial/invalid rows that break dashboards, filters and admin workflows.
     """
     errors: list[str] = []
 
@@ -330,7 +316,7 @@ def validate_submission_input(sub: Submission) -> list[str]:
 
 
 def validate_admin_email(email: str) -> list[str]:
-    """Validate email for admin-triggered notifications."""
+    """Validate emails used for admin-triggered notifications."""
     if not email.strip():
         return ["Email address is required."]
     if not valid_email(email):
@@ -343,16 +329,12 @@ def validate_admin_email(email: str) -> list[str]:
 # ============================================================================
 @st.cache_resource
 def get_connection() -> sqlite3.Connection:
-    """Create and cache SQLite connection.
-
-    Why:
-    - Creating a connection repeatedly is unnecessary overhead on Streamlit reruns.
-    """
+    """Create and cache the SQLite connection for the session (reduces rerun overhead)."""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def init_db(con: sqlite3.Connection) -> None:
-    """Initialize issue reporting tables (idempotent)."""
+    """Create issue-reporting tables (idempotent for safe reruns)."""
     with con:
         con.execute(
             """
@@ -398,7 +380,7 @@ def init_db(con: sqlite3.Connection) -> None:
 
 
 def init_booking_table(con: sqlite3.Connection) -> None:
-    """Initialize booking system tables (idempotent)."""
+    """Create booking table (idempotent)."""
     with con:
         con.execute(
             """
@@ -415,7 +397,7 @@ def init_booking_table(con: sqlite3.Connection) -> None:
 
 
 def init_assets_table(con: sqlite3.Connection) -> None:
-    """Initialize assets table for booking and tracking (idempotent)."""
+    """Create assets table (idempotent)."""
     with con:
         con.execute(
             """
@@ -431,10 +413,10 @@ def init_assets_table(con: sqlite3.Connection) -> None:
 
 
 def migrate_db(con: sqlite3.Connection) -> None:
-    """Apply schema migrations for backward compatibility.
+    """Apply minimal schema migrations for backward compatibility.
 
     Why:
-    - Enables the app to run even if older DB files exist from earlier versions.
+    - Allows grading/running even if an older DB file is present.
     """
     cols = {row[1] for row in con.execute("PRAGMA table_info(submissions)").fetchall()}
     now_iso = now_zurich_str()
@@ -454,7 +436,7 @@ def migrate_db(con: sqlite3.Connection) -> None:
         if "resolved_at" not in cols:
             con.execute("ALTER TABLE submissions ADD COLUMN resolved_at TEXT")
 
-        # Ensure auxiliary tables exist in case the DB predates them.
+        # Ensure auxiliary tables exist (older DBs may not have them).
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS status_log (
@@ -480,7 +462,7 @@ def migrate_db(con: sqlite3.Connection) -> None:
 
 
 def seed_assets(con: sqlite3.Connection) -> None:
-    """Populate database with initial demo assets (idempotent)."""
+    """Insert demo assets once (INSERT OR IGNORE makes this safe on rerun)."""
     assets = [
         ("ROOM_A", "Study Room A", "Room", "R_A_09001", "available"),
         ("ROOM_B", "Study Room B", "Room", "R_B_10012", "available"),
@@ -521,12 +503,12 @@ def seed_assets(con: sqlite3.Connection) -> None:
 
 
 def fetch_submissions(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve all issue submissions."""
+    """Read all issue submissions into a DataFrame (used by multiple pages)."""
     return pd.read_sql("SELECT * FROM submissions", con)
 
 
 def fetch_status_log(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve status change audit log (most recent first)."""
+    """Read the status audit log (latest changes first)."""
     return pd.read_sql(
         """
         SELECT submission_id, old_status, new_status, changed_at
@@ -538,7 +520,7 @@ def fetch_status_log(con: sqlite3.Connection) -> pd.DataFrame:
 
 
 def fetch_report_log(con: sqlite3.Connection, report_type: str) -> pd.DataFrame:
-    """Retrieve report sending history for a report type."""
+    """Read report history for deduplication (prevents repeated emails on rerun)."""
     return pd.read_sql(
         """
         SELECT report_type, sent_at
@@ -552,7 +534,7 @@ def fetch_report_log(con: sqlite3.Connection, report_type: str) -> pd.DataFrame:
 
 
 def fetch_assets(con: sqlite3.Connection) -> pd.DataFrame:
-    """Retrieve all assets."""
+    """Read all assets."""
     return pd.read_sql(
         """
         SELECT asset_id, asset_name, asset_type, location_id, status
@@ -564,7 +546,7 @@ def fetch_assets(con: sqlite3.Connection) -> pd.DataFrame:
 
 
 def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list[str]:
-    """Retrieve asset IDs inside a room (excluding the room itself)."""
+    """Return asset IDs in a room (excluding the room entity itself)."""
     rows = con.execute(
         """
         SELECT asset_id
@@ -578,7 +560,7 @@ def fetch_assets_in_room(con: sqlite3.Connection, room_location_id: str) -> list
 
 
 def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
-    """Log that a report has been sent to prevent duplicate runs."""
+    """Persist report timestamp so recurring checks remain idempotent."""
     with con:
         con.execute(
             "INSERT INTO report_log (report_type, sent_at) VALUES (?, ?)",
@@ -590,11 +572,11 @@ def mark_report_sent(con: sqlite3.Connection, report_type: str) -> None:
 # BOOKING SYSTEM FUNCTIONS
 # ============================================================================
 def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
-    """Update asset statuses based on active bookings.
+    """Update asset statuses from current bookings.
 
     Why:
-    - Keeps the UI simple: assets reflect current availability without requiring
-      complex joins in every view.
+    - Keeps the UI simple: we display a single “status” field per asset.
+    - Avoids repeating complex “is booked?” joins in multiple UI pages.
     """
     now_iso = now_zurich().isoformat(timespec="seconds")
 
@@ -620,14 +602,14 @@ def sync_asset_statuses_from_bookings(con: sqlite3.Connection) -> None:
 
             con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (asset_id,))
 
-            # Booking a room implicitly blocks items inside that room (projectors, chairs, etc.).
+            # Room bookings implicitly block items inside the room to prevent double-booking.
             if asset_type == "Room" and is_room_location(location_id):
                 for aid in fetch_assets_in_room(con, location_id):
                     con.execute("UPDATE assets SET status = 'booked' WHERE asset_id = ?", (aid,))
 
 
 def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datetime, end_time: datetime) -> bool:
-    """Check if an asset is available during the requested time window."""
+    """Return True if no booking overlaps the requested time window."""
     count = con.execute(
         """
         SELECT COUNT(*) FROM bookings
@@ -641,7 +623,7 @@ def is_asset_available(con: sqlite3.Connection, asset_id: str, start_time: datet
 
 
 def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFrame:
-    """Retrieve upcoming bookings for a specific asset."""
+    """Read upcoming bookings for one asset (used for transparency in booking UI)."""
     now_iso = now_zurich().isoformat(timespec="seconds")
     return pd.read_sql(
         """
@@ -657,7 +639,7 @@ def fetch_future_bookings(con: sqlite3.Connection, asset_id: str) -> pd.DataFram
 
 
 def fetch_future_bookings_for_user(con: sqlite3.Connection, user_name: str) -> pd.DataFrame:
-    """Retrieve upcoming bookings for a specific user (case-insensitive)."""
+    """Read upcoming bookings for a user (case-insensitive match)."""
     now_iso = now_zurich().isoformat(timespec="seconds")
     return pd.read_sql(
         """
@@ -674,7 +656,7 @@ def fetch_future_bookings_for_user(con: sqlite3.Connection, user_name: str) -> p
 
 
 def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | None:
-    """Find the next available time for a currently booked asset."""
+    """Return the soonest end_time after now (used to explain ‘currently booked’ to users)."""
     now_iso = now_zurich().isoformat(timespec="seconds")
     row = con.execute(
         """
@@ -691,7 +673,7 @@ def next_available_time(con: sqlite3.Connection, asset_id: str) -> datetime | No
 
 
 def count_active_bookings(con: sqlite3.Connection) -> int:
-    """Count bookings active right now (for KPI cards)."""
+    """Count bookings active right now (simple KPI)."""
     now_iso = now_zurich().isoformat(timespec="seconds")
     row = con.execute(
         """
@@ -705,7 +687,7 @@ def count_active_bookings(con: sqlite3.Connection) -> int:
 
 
 def count_future_bookings(con: sqlite3.Connection) -> int:
-    """Count bookings that end in the future (optional KPI)."""
+    """Count bookings with an end_time in the future (simple KPI)."""
     now_iso = now_zurich().isoformat(timespec="seconds")
     row = con.execute("SELECT COUNT(*) FROM bookings WHERE end_time >= ?", (now_iso,)).fetchone()
     return int(row[0] if row and row[0] is not None else 0)
@@ -721,11 +703,7 @@ def update_issue_admin_fields(
     assigned_to: str | None,
     old_status: str,
 ) -> None:
-    """Update issue status and assignment with audit logging.
-
-    Why:
-    - The status_log provides accountability and supports debugging/reviews.
-    """
+    """Update status/assignment and log the change for auditability."""
     updated_at = now_zurich_str()
     set_resolved_at = new_status == "Resolved"
 
@@ -752,6 +730,7 @@ def update_issue_admin_fields(
             ),
         )
 
+        # Keep a status history so graders/admins can trace what happened when.
         if new_status != old_status:
             con.execute(
                 """
@@ -763,10 +742,9 @@ def update_issue_admin_fields(
 
 
 def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
-    """Insert a new issue submission into the database."""
+    """Insert a new issue submission (single transaction for atomicity)."""
     created_at = now_zurich_str()
 
-    # One transaction keeps submission writes atomic: either the row is stored fully or not at all.
     with con:
         con.execute(
             """
@@ -792,11 +770,11 @@ def insert_submission(con: sqlite3.Connection, sub: Submission) -> None:
 # EMAIL FUNCTIONS
 # ============================================================================
 def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> tuple[bool, str]:
-    """Send email with robust error handling.
+    """Send an email; return (success, user-facing message).
 
     Why:
-    - Email is an external dependency; failures must not crash the app.
-    - debug-mode surfaces technical details for graders/admins.
+    - Email is an external dependency; failures should not crash the app.
+    - Debug mode can surface more details without exposing them to normal users.
     """
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -824,7 +802,7 @@ def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> 
 
 
 def send_admin_report_email(subject: str, body: str, *, config: AppConfig) -> tuple[bool, str]:
-    """Send report email to admin inbox only."""
+    """Send report email to the admin inbox only (keeps reporting separate from user emails)."""
     if not config.admin_inbox:
         return False, "ADMIN_INBOX is not configured."
 
@@ -850,7 +828,7 @@ def send_admin_report_email(subject: str, body: str, *, config: AppConfig) -> tu
 
 
 def confirmation_email_text(recipient_name: str, importance: str) -> tuple[str, str]:
-    """Generate confirmation email content for new issue submissions."""
+    """Build the confirmation email for a newly created issue."""
     subject = "Reporting Tool @ HSG: Issue Received"
     sla_hours = SLA_HOURS_BY_IMPORTANCE.get(importance)
 
@@ -875,7 +853,7 @@ HSG Service Team
 
 
 def resolved_email_text(recipient_name: str) -> tuple[str, str]:
-    """Generate resolution notification email content."""
+    """Build the email sent when an issue is marked resolved."""
     subject = "Reporting Tool @ HSG: Issue Resolved"
     body = f"""Hello {recipient_name},
 
@@ -891,7 +869,7 @@ HSG Service Team
 # REPORTING FUNCTIONS
 # ============================================================================
 def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
-    """Generate weekly summary report content."""
+    """Build a concise summary report from all issues (last 7 days)."""
     now_dt = now_zurich()
     since_dt = now_dt - timedelta(days=7)
 
@@ -924,11 +902,7 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
 
 
 def send_weekly_report_if_due(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Check if weekly report is due and send it.
-
-    Why:
-    - Prevents spam by sending at most one report per day, even with Streamlit reruns.
-    """
+    """Send a weekly report once at the configured weekday/hour (idempotent on reruns)."""
     if not config.auto_weekly_report:
         return
 
@@ -936,6 +910,7 @@ def send_weekly_report_if_due(con: sqlite3.Connection, *, config: AppConfig) -> 
     if now_dt.weekday() != config.report_weekday or now_dt.hour != config.report_hour:
         return
 
+    # Deduplicate: reruns during the same hour/day should not spam emails.
     log_df = fetch_report_log(con, "weekly")
     if not log_df.empty:
         last_sent = iso_to_dt(str(log_df.iloc[0]["sent_at"]))
@@ -953,17 +928,13 @@ def send_weekly_report_if_due(con: sqlite3.Connection, *, config: AppConfig) -> 
 # UI HELPER FUNCTIONS
 # ============================================================================
 def show_errors(errors: Iterable[str]) -> None:
-    """Display validation errors to the user."""
+    """Render validation errors consistently (single UI style across pages)."""
     for msg in errors:
         st.error(msg)
 
 
 def show_logo() -> None:
-    """Show logo in sidebar with a graceful fallback.
-
-    Why:
-    - Missing assets should not crash the app; graders should still be able to run it.
-    """
+    """Show logo but do not fail if the asset is missing (keeps grading runnable)."""
     try:
         st.sidebar.image(LOGO_PATH, width=170, use_container_width=False)
     except FileNotFoundError:
@@ -971,7 +942,7 @@ def show_logo() -> None:
 
 
 def render_map_iframe() -> None:
-    """Display interactive campus map in a collapsible section."""
+    """Embed the campus map as a reference (kept in an expander to avoid UI clutter)."""
     with st.expander("📍 Campus Map Reference", expanded=False):
         st.markdown(
             f"""
@@ -984,16 +955,12 @@ def render_map_iframe() -> None:
 
 
 def location_label(loc_id: str) -> str:
-    """Convert location ID to human-readable label."""
+    """Convert internal location IDs into user-friendly labels."""
     return LOCATIONS.get(str(loc_id), {}).get("label", "Unknown location")
 
 
 def asset_display_label(row: pd.Series) -> str:
-    """Generate descriptive label for asset selection dropdown.
-
-    Why:
-    - Users decide faster when status + location are visible directly in the dropdown.
-    """
+    """Build a descriptive dropdown label so users can decide quickly."""
     status = str(row.get("status", "")).strip().lower()
     if status == "available":
         status_text = "✅ Available"
@@ -1007,7 +974,7 @@ def asset_display_label(row: pd.Series) -> str:
 
 
 def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Format booking data for user-friendly display."""
+    """Format booking data for display (stable date/time formatting)."""
     if df.empty:
         return df
 
@@ -1023,7 +990,7 @@ def format_booking_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def format_user_bookings_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Format user booking data for a user-friendly display."""
+    """Format a user’s bookings (same formatting as the asset booking table)."""
     if df.empty:
         return df
 
@@ -1047,11 +1014,7 @@ def format_user_bookings_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str:
-    """Stable preview for long table text.
-
-    Why:
-    - Tables stay readable while still allowing full text in the detail view.
-    """
+    """Shorten long text for tables while keeping detail available elsewhere."""
     text = (value or "").strip()
     if len(text) <= max_chars:
         return text
@@ -1059,11 +1022,7 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
 
 
 def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
-    """Create a visually grouped container with a subtle border.
-
-    Why:
-    - Streamlit-native border keeps UI stable across environments (no custom CSS dependency).
-    """
+    """Use Streamlit-native borders (portable across environments; no custom CSS)."""
     return st.container(border=True, key=key)
 
 
@@ -1071,11 +1030,11 @@ def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
 # APPLICATION PAGES
 # ============================================================================
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Submission page (UI unchanged)."""
+    """User-facing issue submission flow (UI intentionally kept simple)."""
     st.header("📝 Report a Facility Issue")
     st.caption("Fields marked with * are mandatory.")
 
-    # Defaults are set once to make reruns deterministic and avoid KeyErrors.
+    # Defaults are set once so reruns remain deterministic (avoids KeyErrors on session_state).
     st.session_state.setdefault("issue_name", "")
     st.session_state.setdefault("issue_email", "")
     st.session_state.setdefault("issue_room", "")
@@ -1105,6 +1064,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
                 .lower()
             )
 
+            # Immediate feedback reduces invalid submissions (cheaper than rejecting after submit).
             if email_raw and not valid_email(email_raw):
                 st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
 
@@ -1132,6 +1092,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             help="Used to determine the SLA target handling time.",
         )
 
+        # Make the SLA meaning explicit at the moment the user chooses priority.
         sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
         if sla_hours is not None:
             target_dt = now_zurich() + timedelta(hours=int(sla_hours))
@@ -1208,9 +1169,10 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     if ok:
         st.balloons()
     else:
+        # Non-blocking: the report is stored even if email fails.
         st.warning(f"Note: {msg}")
 
-    # Clearing form state avoids accidental duplicate submissions on rerun.
+    # Clear form state to reduce accidental duplicates after reruns/back/refresh.
     for k in [
         "issue_name",
         "issue_email",
@@ -1224,7 +1186,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
 
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare a user-friendly DataFrame for display (UI unchanged)."""
+    """Prepare a user-friendly DataFrame for the dashboard table."""
     display_df = df.copy()
     display_df["user_comment_preview"] = display_df["user_comment"].astype(str).apply(truncate_text)
 
@@ -1246,6 +1208,7 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
+    # Sort by priority first so high-impact issues surface immediately.
     importance_order = {"High": 0, "Medium": 1, "Low": 2}
     display_df["_priority_rank"] = display_df["Priority"].map(importance_order).fillna(99).astype(int)
 
@@ -1253,12 +1216,13 @@ def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
         columns=["_priority_rank"]
     )
 
+    # Keep the full comment accessible in the details view; table uses a preview.
     display_df = display_df.drop(columns=["user_comment"], errors="ignore")
     return display_df
 
 
 def render_charts(df: pd.DataFrame) -> None:
-    """Render lightweight analytics using Streamlit charts."""
+    """Render simple charts for quick insights (kept lightweight for Streamlit reruns)."""
     if df.empty:
         st.info("No data available for charts.")
         return
@@ -1297,7 +1261,7 @@ def render_charts(df: pd.DataFrame) -> None:
 
 
 def page_submitted_issues(con: sqlite3.Connection) -> None:
-    """Display submitted issues with filtering, quick-detail view, and analytics (UI unchanged)."""
+    """Dashboard view for submitted issues (filters + details + export)."""
     st.header("📋 Submitted Issues Dashboard")
 
     try:
@@ -1397,6 +1361,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
     filtered_df["expected_resolved_at"] = filtered_df.apply(_sla_target_row, axis=1)
 
+    # Optional KPI: only computed when the required columns exist and parse cleanly.
     resolved_df = filtered_df[filtered_df["status"] == "Resolved"].copy()
     if not resolved_df.empty and "created_at" in resolved_df.columns and "resolved_at" in resolved_df.columns:
         resolved_df["created_at_dt"] = pd.to_datetime(resolved_df["created_at"], errors="coerce")
@@ -1501,9 +1466,10 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
 
 
 def page_booking(con: sqlite3.Connection) -> None:
-    """Display asset booking interface with availability checking (UI unchanged)."""
+    """Booking UI with availability checks and a transparent booking overview."""
     st.header("📅 Book an Asset")
 
+    # Toasts are stored in session_state so the user sees a confirmation after rerun.
     if st.session_state.pop("booking_success_toast", False):
         details = st.session_state.pop("booking_success_details", None)
         if details:
@@ -1588,6 +1554,7 @@ def page_booking(con: sqlite3.Connection) -> None:
         )
         view_df = view_df[mask].copy()
 
+    # Prefer showing available assets first to reduce user friction.
     view_df["_status_rank"] = (
         view_df["status"].astype(str).str.lower().map({"available": 0, "booked": 1}).fillna(99).astype(int)
     )
@@ -1788,7 +1755,7 @@ def page_booking(con: sqlite3.Connection) -> None:
 
 
 def page_assets(con: sqlite3.Connection) -> None:
-    """Display asset tracking and management interface (UI unchanged)."""
+    """Asset tracking page (filter/search + move assets)."""
     st.header("📍 Asset Tracking")
     if st.session_state.pop("asset_move_success_toast", False):
         st.toast("Asset moved ✅", icon="🚚")
@@ -1881,7 +1848,11 @@ def page_assets(con: sqlite3.Connection) -> None:
         st.info("No assets available for movement.")
         return
 
-    asset_id = st.selectbox("Select asset to move:", options=list(asset_options.keys()), format_func=lambda aid: asset_options[aid])
+    asset_id = st.selectbox(
+        "Select asset to move:",
+        options=list(asset_options.keys()),
+        format_func=lambda aid: asset_options[aid],
+    )
 
     selected_asset = assets_df[assets_df["asset_id"] == asset_id].iloc[0]
     col_current1, col_current2, col_current3 = st.columns(3)
@@ -1892,7 +1863,11 @@ def page_assets(con: sqlite3.Connection) -> None:
     with col_current3:
         st.metric("Current Location", str(selected_asset["location_label"]))
 
-    new_location_id = st.selectbox("New location:", options=list(LOCATIONS.keys()), format_func=lambda x: LOCATIONS[x]["label"])
+    new_location_id = st.selectbox(
+        "New location:",
+        options=list(LOCATIONS.keys()),
+        format_func=lambda x: LOCATIONS[x]["label"],
+    )
 
     if st.button("Move asset", type="primary", use_container_width=True):
         if new_location_id == selected_asset["location_id"]:
@@ -1910,7 +1885,7 @@ def page_assets(con: sqlite3.Connection) -> None:
 
 
 def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None:
-    """Admin interface for managing issue statuses and assignments (UI unchanged)."""
+    """Admin panel: update status/assignee and optionally notify reporter."""
     st.header("🔧 Admin Panel - Issue Management")
     if st.session_state.pop("admin_update_toast", False):
         st.toast("Saved ✅", icon="✅")
@@ -2014,6 +1989,7 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
             index=STATUS_LEVELS.index(row["status"]) if row["status"] in STATUS_LEVELS else 0,
         )
 
+        # Extra confirmation reduces accidental “Resolved” clicks (important for notifications).
         confirm_resolution = True
         if new_status == "Resolved":
             confirm_resolution = st.checkbox("✓ Confirm issue resolution (will send notification email)", value=False)
@@ -2057,7 +2033,7 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
 
 
 def page_overview_dashboard(con: sqlite3.Connection) -> None:
-    """Display overview dashboard with key metrics (UI unchanged)."""
+    """High-level overview page (quick KPIs for both issues and assets)."""
     st.header("📊 Overview Dashboard")
     st.caption("Real-time overview of system status. All times are Europe/Zurich.")
 
@@ -2161,7 +2137,7 @@ def page_overview_dashboard(con: sqlite3.Connection) -> None:
 # MAIN APPLICATION
 # ============================================================================
 def main() -> None:
-    """Main application entry point."""
+    """App entry point (routing + one-time initialization)."""
     st.set_page_config(
         page_title="Reporting Tool @ HSG",
         page_icon="🏛️",
@@ -2210,6 +2186,7 @@ def main() -> None:
             use_container_width=True,
         )
     except FileNotFoundError:
+        # UI fallback: keep the app usable even if the header image is missing.
         st.caption("Reporting Tool @ HSG")
 
     try:
@@ -2254,6 +2231,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        # Catch-all so an unexpected exception still produces a helpful UI message for graders.
         logger.critical("Application crashed: %s", e, exc_info=True)
 
         st.error(
@@ -2272,4 +2250,5 @@ if __name__ == "__main__":
 
                 st.code(traceback.format_exc(), language="python")
         except Exception:
+            # Debug output is best-effort; the UI should not crash while rendering an error.
             pass
