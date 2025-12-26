@@ -819,12 +819,6 @@ def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> 
     
     msg.set_content(body)
 
-
-    recipients = [to_email]
-    if config.admin_inbox:
-        # Keep the service team in the loop operationally without exposing addresses in the UI.
-        recipients.append(config.admin_inbox)
-
     try:
         with smtplib.SMTP(config.smtp_server, config.smtp_port, timeout=10) as smtp:
             smtp.ehlo()
@@ -2076,6 +2070,8 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
     st.divider()
     st.subheader("✏️ Update Issue")
 
+    old_status = str(row["status"])
+
     with st.form("admin_update_form"):
         current_assignee = str(row.get("assigned_to", "") or "")
         assignee_options = ["(Unassigned)"] + config.assignees
@@ -2107,7 +2103,6 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
         return
 
     try:
-        old_status = str(row["status"])
         update_issue_admin_fields(
             con=con,
             issue_id=int(selected_id),
@@ -2116,7 +2111,7 @@ def page_overwrite_status(con: sqlite3.Connection, *, config: AppConfig) -> None
             old_status=old_status,
         )
 
-        if new_status == "Resolved":
+        if old_status != "Resolved" and new_status == "Resolved":
             email_errors = validate_admin_email(str(row["hsg_email"]))
             if email_errors:
                 show_errors(email_errors)
