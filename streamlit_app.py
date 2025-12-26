@@ -258,6 +258,24 @@ def iso_to_dt(value: str) -> datetime | None:
         return None
 
 
+def parse_iso_series_to_zurich(values: pd.Series) -> pd.Series:
+    """Parse ISO timestamp strings into Europe/Zurich timezone (best-effort).
+
+    Why:
+    - DB timestamps may be stored with offsets (+01:00/+02:00) OR as naive strings.
+    - We want deterministic local times in the UI.
+    - One malformed legacy row must not crash the whole page.
+    """
+    s = pd.to_datetime(values, errors="coerce")
+
+    # If timestamps are naive, assume they are local Zurich time (APP_TZ).
+    if getattr(s.dt, "tz", None) is None:
+        return s.dt.tz_localize(APP_TZ, ambiguous="NaT", nonexistent="shift_forward")
+
+    # If aware, normalize to Zurich.
+    return s.dt.tz_convert(APP_TZ)
+
+
 def expected_resolution_dt(created_at_iso: str, importance: str) -> datetime | None:
     """Compute SLA target timestamp based on creation time + priority."""
     created_dt = iso_to_dt(created_at_iso)
@@ -277,7 +295,7 @@ def is_room_location(location_id: str) -> bool:
 # ============================================================================
 def valid_email(hsg_email: str) -> bool:
     """Validate HSG email format (unisg domains only)."""
-    return bool(EMAIL_PATTERN.fullmatch(hsg_email.strip()))
+    return bool(EMAIL_PATTERN.fullmatch(hsg_email.strip().lower()))
 
 
 def normalize_room(room_number: str) -> str:
@@ -815,10 +833,6 @@ def send_email(to_email: str, subject: str, body: str, *, config: AppConfig) -> 
     msg["Subject"] = subject
     msg["From"] = config.from_email
     msg["To"] = to_email
-    if config.admin_inbox:
-        # Admin gets a copy without being visible as a normal recipient
-        msg["Bcc"] = config.admin_inbox
-    
     msg.set_content(body)
 
     try:
@@ -909,8 +923,8 @@ def build_weekly_report(df_all: pd.DataFrame) -> tuple[str, str]:
     since_dt = now_dt - timedelta(days=7)
 
     df = df_all.copy()
-    df["created_at_dt"] = pd.to_datetime(df.get("created_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
-    df["resolved_at_dt"] = pd.to_datetime(df.get("resolved_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
+    df["created_at_dt"] = parse_iso_series_to_zurich(df["created_at"])
+    df["resolved_at_dt"] = parse_iso_series_to_zurich(df["resolved_at"])
 
     new_last_7d = df[df["created_at_dt"] >= since_dt]
     resolved_last_7d = df[(df["resolved_at_dt"].notna()) & (df["resolved_at_dt"] >= since_dt)]
@@ -1058,8 +1072,8 @@ def format_user_bookings_table(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     out = df.copy()
-    out["start_time"] = pd.to_datetime(out.get("start_time"), errors="coerce")
-    out["end_time"] = pd.to_datetime(out.get("end_time"), errors="coerce")
+    out["start_time"] = parse_iso_series_to_zurich(out["start_time"])
+    out["end_time"] = parse_iso_series_to_zurich(out["end_time"])
 
     out = out.dropna(subset=["start_time", "end_time"]).sort_values(by=["start_time"])
     out["start_time"] = out["start_time"].dt.strftime("%Y-%m-%d %H:%M")
@@ -1448,7 +1462,7 @@ def page_submitted_issues(con: sqlite3.Connection) -> None:
     days = date_range_label_to_days[date_range_choice]
     if days is not None:
         cutoff = now_zurich() - timedelta(days=int(days))
-        filtered_df["created_at_dt"] = pd.to_datetime(filtered_df.get("created_at"), errors="coerce", utc=True).dt.tz_convert(APP_TZ)
+        filtered_df["created_at_dt"] = parse_iso_series_to_zurich(filtered_df["created_at"])
         filtered_df = filtered_df[filtered_df["created_at_dt"].notna() & (filtered_df["created_at_dt"] >= cutoff)].copy()
         filtered_df = filtered_df.drop(columns=["created_at_dt"], errors="ignore")
 
