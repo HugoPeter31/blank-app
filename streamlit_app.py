@@ -1155,6 +1155,19 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             help=HELP_TEXTS["priority"],
         )
 
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
+        if sla_hours is not None:
+            target_dt = now_zurich() + timedelta(hours=int(sla_hours))
+            st.info(
+                f"⏱️ **Target handling time:** within **{sla_hours} hours** "
+                f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                icon="ℹ️",
+            )
+            st.caption("SLA = Service Level Agreement (service target time).")
+        else:
+            st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
+
+
         # Form makes input + submit atomic: Streamlit only "commits" values when user clicks submit.
         with st.form("issue_submit_form", clear_on_submit=False):
             st.subheader("👤 Your Information")
