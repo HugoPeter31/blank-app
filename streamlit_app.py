@@ -757,35 +757,34 @@ def update_issue_admin_fields(
                 """,
                 (int(issue_id), old_status, new_status, updated_at),
             )
+def insert_submission(con: sqlite3.Connection, sub: Submission) -> int:
+    """Insert a new issue submission (single transaction for atomicity).
 
-    def insert_submission(con: sqlite3.Connection, sub: Submission) -> int:
-        """Insert a new issue submission (single transaction for atomicity).
-    
-        Returns:
-            int: The inserted submission ID (for user-facing confirmation).
-        """
-        created_at = now_zurich_str()
-    
-        with con:
-            cur = con.execute(
-                """
-                INSERT INTO submissions
-                (name, hsg_email, issue_type, room_number, importance, status,
-                 user_comment, created_at, updated_at, assigned_to, resolved_at)
-                VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, NULL, NULL)
-                """,
-                (
-                    sub.name.strip(),
-                    sub.hsg_email.strip().lower(),
-                    sub.issue_type,
-                    normalize_room(sub.room_number),
-                    sub.importance,
-                    sub.user_comment.strip(),
-                    created_at,
-                    created_at,
-                ),
-            )
-            return int(cur.lastrowid)
+    Returns:
+        int: The inserted submission ID (for user-facing confirmation).
+    """
+    created_at = now_zurich_str()
+
+    with con:
+        cur = con.execute(
+            """
+            INSERT INTO submissions
+            (name, hsg_email, issue_type, room_number, importance, status,
+             user_comment, created_at, updated_at, assigned_to, resolved_at)
+            VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, NULL, NULL)
+            """,
+            (
+                sub.name.strip(),
+                sub.hsg_email.strip().lower(),
+                sub.issue_type,
+                normalize_room(sub.room_number),
+                sub.importance,
+                sub.user_comment.strip(),
+                created_at,
+                created_at,
+            ),
+        )
+        return int(cur.lastrowid)
 
 
 # ============================================================================
@@ -1109,106 +1108,107 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     st.session_state.setdefault("issue_priority", "Low")
     st.session_state.setdefault("issue_description", "")
 
-    email_raw = ""
+    
+        email_raw = ""
     room_raw = ""
 
-with bordered_container(key="issue_form_card"):
-    # Form makes input + submit atomic: Streamlit only "commits" values when user clicks submit.
-    with st.form("issue_submit_form", clear_on_submit=False):
-        st.subheader("👤 Your Information")
-        c1, c2 = st.columns(2)
+    with bordered_container(key="issue_form_card"):
+        # Form makes input + submit atomic: Streamlit only "commits" values when user clicks submit.
+        with st.form("issue_submit_form", clear_on_submit=False):
+            st.subheader("👤 Your Information")
+            c1, c2 = st.columns(2)
 
-        with c1:
-            st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
+            with c1:
+                st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
 
-        with c2:
-            email_raw = (
-                st.text_input(
-                    "Email Address*",
-                    placeholder="firstname.lastname@student.unisg.ch",
-                    key="issue_email",
-                    help=HELP_TEXTS["email"],
+            with c2:
+                email_raw = (
+                    st.text_input(
+                        "Email Address*",
+                        placeholder="firstname.lastname@student.unisg.ch",
+                        key="issue_email",
+                        help=HELP_TEXTS["email"],
+                    )
+                    .strip()
+                    .lower()
                 )
-                .strip()
-                .lower()
+
+                if email_raw and not valid_email(email_raw):
+                    st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
+
+            st.subheader("📋 Issue Details")
+
+            c3, c4 = st.columns(2)
+            with c3:
+                room_raw = st.text_input(
+                    "Room Number*",
+                    placeholder="e.g., A 09-001",
+                    key="issue_room",
+                    help=HELP_TEXTS["room"],
+                ).strip()
+
+                if room_raw:
+                    normalized = normalize_room(room_raw)
+
+                    if normalized != room_raw:
+                        st.caption(f"Saved as: **{normalized}**")
+
+                    if not valid_room_number(normalized):
+                        st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
+
+            with c4:
+                st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
+
+            st.selectbox(
+                "Priority Level*",
+                options=IMPORTANCE_LEVELS,
+                key="issue_priority",
+                help=HELP_TEXTS["priority"],
             )
 
-            if email_raw and not valid_email(email_raw):
-                st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
+            sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
+            if sla_hours is not None:
+                target_dt = now_zurich() + timedelta(hours=int(sla_hours))
+                st.info(
+                    f"⏱️ **Target handling time:** within **{sla_hours} hours** "
+                    f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                    icon="ℹ️",
+                )
+            else:
+                st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
 
-        st.subheader("📋 Issue Details")
-
-        c3, c4 = st.columns(2)
-        with c3:
-            room_raw = st.text_input(
-                "Room Number*",
-                placeholder="e.g., A 09-001",
-                key="issue_room",
-                help=HELP_TEXTS["room"],
-            ).strip()
-
-            if room_raw:
-                normalized = normalize_room(room_raw)
-
-                if normalized != room_raw:
-                    st.caption(f"Saved as: **{normalized}**")
-
-                if not valid_room_number(normalized):
-                    st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
-
-        with c4:
-            st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
-
-        st.selectbox(
-            "Priority Level*",
-            options=IMPORTANCE_LEVELS,
-            key="issue_priority",
-            help=HELP_TEXTS["priority"],
-        )
-
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state["issue_priority"]))
-        if sla_hours is not None:
-            target_dt = now_zurich() + timedelta(hours=int(sla_hours))
-            st.info(
-                f"⏱️ **Target handling time:** within **{sla_hours} hours** "
-                f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
-                icon="ℹ️",
+            st.text_area(
+                "Problem Description*",
+                max_chars=MAX_ISSUE_DESCRIPTION_CHARS,
+                placeholder="What happened? Where exactly? Since when? Any impact?",
+                height=110,
+                key="issue_description",
+                help=HELP_TEXTS["description"],
             )
-        else:
-            st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
 
-        st.text_area(
-            "Problem Description*",
-            max_chars=MAX_ISSUE_DESCRIPTION_CHARS,
-            placeholder="What happened? Where exactly? Since when? Any impact?",
-            height=110,
-            key="issue_description",
-            help=HELP_TEXTS["description"],
-        )
+            st.subheader("📸 Upload Photo")
+            uploaded_file = st.file_uploader(
+                "Optional: add a photo (jpg / png)",
+                type=["jpg", "jpeg", "png"],
+                help="Avoid personal data in the photo where possible.",
+                key="issue_photo",
+            )
+            if uploaded_file is not None:
+                st.image(uploaded_file, caption="Preview", use_container_width=True)
 
-        st.subheader("📸 Upload Photo")
-        uploaded_file = st.file_uploader(
-            "Optional: add a photo (jpg / png)",
-            type=["jpg", "jpeg", "png"],
-            help="Avoid personal data in the photo where possible.",
-            key="issue_photo",
-        )
-        if uploaded_file is not None:
-            st.image(uploaded_file, caption="Preview", use_container_width=True)
+            render_map_iframe()
 
-        render_map_iframe()
+            with st.expander("🔎 Review your report", expanded=False):
+                st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
+                st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
+                st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
+                st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
+                st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
 
-        with st.expander("🔎 Review your report", expanded=False):
-            st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
-            st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
-            st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
-            st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
-            st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
+            submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
 
-        submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
-
-    if not submitted:
-        return
+        if not submitted:
+            return
 
     sub = Submission(
         name=str(st.session_state["issue_name"]).strip(),
@@ -1233,11 +1233,6 @@ with bordered_container(key="issue_form_card"):
 
     subject, body = confirmation_email_text(sub.name.strip(), sub.importance)
     ok, msg = send_email(sub.hsg_email, subject, body, config=config)
-
-    st.session_state["last_submission_time"] = now_zurich()
-
-    sla_hours = SLA_HOURS_BY_IMPORTANCE.get(sub.importance)
-    submitted_at = now_zurich().strftime("%Y-%m-%d %H:%M")
 
     # Store timestamp so users can't accidentally spam the form on reruns.
     st.session_state["last_submission_time"] = now_zurich()
