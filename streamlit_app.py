@@ -1101,15 +1101,16 @@ def truncate_text(value: str, max_chars: int = DESCRIPTION_PREVIEW_CHARS) -> str
     return text[: max_chars - 1] + "…"
 
 def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
-    """Create a visually grouped container.
+    """Create a visually grouped container with Streamlit-version fallback.
 
-    Compatibility note:
-    - Some Streamlit versions don't support `border=` and/or `key=` on containers.
-    - We keep the function signature stable (key stays), but we don't pass it to st.container.
+    Why:
+    - Newer Streamlit supports border + key (stable layout grouping).
+    - Older Streamlit versions may not support these args; fall back gracefully.
     """
     try:
-        return st.container(border=True)
+        return st.container(border=True, key=key)
     except TypeError:
+        # Older Streamlit: container() may not accept border/key
         return st.container()
 
 
