@@ -261,17 +261,17 @@ def iso_to_dt(value: str) -> datetime | None:
 def parse_iso_series_to_zurich(values: pd.Series) -> pd.Series:
     """Parse ISO timestamp strings into Europe/Zurich timezone (best-effort).
 
-    Handles three timestamp formats:
-    1. Naive strings (assumed Zurich local time)
-    2. UTC-aware timestamps
-    3. Zurich-aware timestamps (convert to local)
-    
-    Returns:
-        pd.Series: Timezone-aware timestamps, NaT for unparsable values
+    Robust against:
+    - Fully empty columns (all None/NaT)
+    - Mixed timestamp formats (naive + aware)
     """
     s = pd.to_datetime(values, errors="coerce")
 
-    # If timestamps are naive, assume they are local Zurich time (APP_TZ).
+    # If everything is NaT, return early (avoids edge-case .dt issues on some pandas versions).
+    if s.isna().all():
+        return s
+
+    # If timestamps are naive, assume Zurich local time.
     if getattr(s.dt, "tz", None) is None:
         return s.dt.tz_localize(APP_TZ, ambiguous="NaT", nonexistent="shift_forward")
 
@@ -407,7 +407,7 @@ def init_db(con: sqlite3.Connection) -> None:
                 old_status TEXT NOT NULL,
                 new_status TEXT NOT NULL,
                 changed_at TEXT NOT NULL,
-                FOREIGN KEY (submission_id) REFERENCES submissions(id)
+                FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE
             )
             """
         )
