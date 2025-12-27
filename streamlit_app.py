@@ -1146,98 +1146,98 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     submitted = False
 
     with bordered_container(key="issue_form_card"):
-        st.subheader("👤 Your Information")
-        c1, c2 = st.columns(2)
+        with st.form("issue_submit_form", clear_on_submit=False):
+            st.subheader("👤 Your Information")
+            c1, c2 = st.columns(2)
     
-        with c1:
-            st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
+            with c1:
+                st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
     
-        with c2:
-            email_raw = (
-                st.text_input(
-                    "Email Address*",
-                    placeholder="firstname.lastname@student.unisg.ch",
-                    key="issue_email",
-                    help=HELP_TEXTS["email"],
+            with c2:
+                email_raw = (
+                    st.text_input(
+                        "Email Address*",
+                        placeholder="firstname.lastname@student.unisg.ch",
+                        key="issue_email",
+                        help=HELP_TEXTS["email"],
+                    )
+                    .strip()
+                    .lower()
                 )
-                .strip()
-                .lower()
+                if email_raw and not valid_email(email_raw):
+                    st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
+    
+            st.subheader("📋 Issue Details")
+            c3, c4 = st.columns(2)
+    
+            with c3:
+                room_raw = st.text_input(
+                    "Room Number*",
+                    placeholder="e.g., A 09-001",
+                    key="issue_room",
+                    help=HELP_TEXTS["room"],
+                ).strip()
+    
+                if room_raw:
+                    normalized = normalize_room(room_raw)
+                    if normalized != room_raw:
+                        st.caption(f"Saved as: **{normalized}**")
+                    if not valid_room_number(normalized):
+                        st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
+    
+            with c4:
+                st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
+    
+            # FULL WIDTH priority (wie du wolltest)
+            st.selectbox(
+                "Priority Level*",
+                options=IMPORTANCE_LEVELS,
+                key="issue_priority",
+                help=HELP_TEXTS["priority"],
             )
-            if email_raw and not valid_email(email_raw):
-                st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
     
-        st.subheader("📋 Issue Details")
-        c3, c4 = st.columns(2)
+            sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state.get("issue_priority", "")))
+            if sla_hours is not None:
+                target_dt = now_zurich() + timedelta(hours=int(sla_hours))
+                st.info(
+                    f"⏱️ **Target handling time:** within **{sla_hours} hours** "
+                    f"(approx. if submitted now: **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                    icon="ℹ️",
+                )
+                st.caption("SLA = Service Level Agreement (service target time).")
+            else:
+                st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
     
-        with c3:
-            room_raw = st.text_input(
-                "Room Number*",
-                placeholder="e.g., A 09-001",
-                key="issue_room",
-                help=HELP_TEXTS["room"],
-            ).strip()
-    
-            if room_raw:
-                normalized = normalize_room(room_raw)
-                if normalized != room_raw:
-                    st.caption(f"Saved as: **{normalized}**")
-                if not valid_room_number(normalized):
-                    st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
-    
-        with c4:
-            st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
-    
-        # ✅ FULL WIDTH (wie alle anderen Felder)
-        st.selectbox(
-            "Priority Level*",
-            options=IMPORTANCE_LEVELS,
-            key="issue_priority",
-            help=HELP_TEXTS["priority"],
-        )
-    
-        # ✅ Live SLA direkt unter Priority
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state.get("issue_priority", "")))
-        if sla_hours is not None:
-            target_dt = now_zurich() + timedelta(hours=int(sla_hours))
-            st.info(
-                f"⏱️ **Target handling time:** within **{sla_hours} hours** "
-                f"(approx. if submitted now: **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
-                icon="ℹ️",
+            st.text_area(
+                "Problem Description*",
+                max_chars=MAX_ISSUE_DESCRIPTION_CHARS,
+                placeholder="What happened? Where exactly? Since when? Any impact?",
+                height=110,
+                key="issue_description",
+                help=HELP_TEXTS["description"],
             )
-            st.caption("SLA = Service Level Agreement (service target time).")
-        else:
-            st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
     
-        st.text_area(
-            "Problem Description*",
-            max_chars=MAX_ISSUE_DESCRIPTION_CHARS,
-            placeholder="What happened? Where exactly? Since when? Any impact?",
-            height=110,
-            key="issue_description",
-            help=HELP_TEXTS["description"],
-        )
+            st.subheader("📸 Upload Photo")
+            uploaded_file = st.file_uploader(
+                "Optional: add a photo (jpg / png)",
+                type=["jpg", "jpeg", "png"],
+                help="Avoid personal data in the photo where possible.",
+                key="issue_photo",
+            )
+            if uploaded_file is not None:
+                st.image(uploaded_file, caption="Preview", use_container_width=True)
     
-        st.subheader("📸 Upload Photo")
-        uploaded_file = st.file_uploader(
-            "Optional: add a photo (jpg / png)",
-            type=["jpg", "jpeg", "png"],
-            help="Avoid personal data in the photo where possible.",
-            key="issue_photo",
-        )
-        if uploaded_file is not None:
-            st.image(uploaded_file, caption="Preview", use_container_width=True)
+            render_map_iframe()
     
-        render_map_iframe()
+            with st.expander("🔎 Review your report", expanded=False):
+                st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
+                st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
+                st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
+                st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
+                st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
     
-        with st.expander("🔎 Review your report", expanded=False):
-            st.write(f"**Name:** {st.session_state.get('issue_name', '')}")
-            st.write(f"**Email:** {st.session_state.get('issue_email', '')}")
-            st.write(f"**Room:** {normalize_room(st.session_state.get('issue_room', ''))}")
-            st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
-            st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
-    
-        # ✅ SUBMIT GANZ UNTEN (und full width)
-        submitted = st.button("🚀 Submit Issue Report", type="primary", use_container_width=True)
+            # SUBMIT ganz unten + full width
+            submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
     
     if not submitted:
         return
