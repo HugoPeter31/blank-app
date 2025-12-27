@@ -1119,8 +1119,9 @@ def bordered_container(*, key: str) -> st.delta_generator.DeltaGenerator:
 def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     """User-facing issue submission flow (UI intentionally kept simple)."""
     st.header("📝 Report a Facility Issue")
-    # Toast after successful submit (shown on next rerun)
+
     if st.session_state.pop("issue_submit_success_toast", False):
+        # Toast after successful submit (shown on next rerun)
         details = st.session_state.pop("issue_submit_success_details", None)
         if details:
             st.toast(
@@ -1140,61 +1141,89 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     st.session_state.setdefault("issue_priority", "Low")
     st.session_state.setdefault("issue_description", "")
 
-    
     email_raw = ""
     room_raw = ""
-    
     submitted = False
 
-with bordered_container(key="issue_form_card"):
-    # ----------------------------
-    # 1) FORM: only the fields that should NOT update live
-    # ----------------------------
-    with st.form("issue_submit_form", clear_on_submit=False):
-        st.subheader("👤 Your Information")
-        c1, c2 = st.columns(2)
+    with bordered_container(key="issue_form_card"):
+        # ----------------------------
+        # FORM: fields that should submit atomically
+        # ----------------------------
+        with st.form("issue_submit_form", clear_on_submit=False):
+            st.subheader("👤 Your Information")
+            c1, c2 = st.columns(2)
 
-        with c1:
-            st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
+            with c1:
+                st.text_input("Name*", placeholder="e.g., Max Muster", key="issue_name")
 
-        with c2:
-            email_raw = (
-                st.text_input(
-                    "Email Address*",
-                    placeholder="firstname.lastname@student.unisg.ch",
-                    key="issue_email",
-                    help=HELP_TEXTS["email"],
+            with c2:
+                email_raw = (
+                    st.text_input(
+                        "Email Address*",
+                        placeholder="firstname.lastname@student.unisg.ch",
+                        key="issue_email",
+                        help=HELP_TEXTS["email"],
+                    )
+                    .strip()
+                    .lower()
                 )
-                .strip()
-                .lower()
+                if email_raw and not valid_email(email_raw):
+                    st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
+
+            st.subheader("📋 Issue Details")
+
+            c3, c4 = st.columns(2)
+
+            with c3:
+                room_raw = st.text_input(
+                    "Room Number*",
+                    placeholder="e.g., A 09-001",
+                    key="issue_room",
+                    help=HELP_TEXTS["room"],
+                ).strip()
+
+                if room_raw:
+                    normalized = normalize_room(room_raw)
+                    if normalized != room_raw:
+                        st.caption(f"Saved as: **{normalized}**")
+                    if not valid_room_number(normalized):
+                        st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
+
+            with c4:
+                st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
+
+            submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
+
+        # ----------------------------
+        # LIVE AREA: Priority + SLA (must be OUTSIDE the form)
+        # Positioned directly under the Issue Type column
+        # ----------------------------
+        c3_live, c4_live = st.columns(2)
+
+        with c3_live:
+            st.write("")  # spacer
+
+        with c4_live:
+            st.selectbox(
+                "Priority Level*",
+                options=IMPORTANCE_LEVELS,
+                key="issue_priority",
+                help=HELP_TEXTS["priority"],
             )
-            if email_raw and not valid_email(email_raw):
-                st.warning("Please use …@unisg.ch or …@student.unisg.ch.", icon="⚠️")
 
-        st.subheader("📋 Issue Details")
+            sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state.get("issue_priority", "")))
+            if sla_hours is not None:
+                target_dt = now_zurich() + timedelta(hours=int(sla_hours))
+                st.info(
+                    f"⏱️ **Target handling time:** within **{sla_hours} hours** "
+                    f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                    icon="ℹ️",
+                )
+                st.caption("SLA = Service Level Agreement (service target time).")
+            else:
+                st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
 
-        c3, c4 = st.columns(2)
-
-        with c3:
-            room_raw = st.text_input(
-                "Room Number*",
-                placeholder="e.g., A 09-001",
-                key="issue_room",
-                help=HELP_TEXTS["room"],
-            ).strip()
-
-            if room_raw:
-                normalized = normalize_room(room_raw)
-
-                if normalized != room_raw:
-                    st.caption(f"Saved as: **{normalized}**")
-
-                if not valid_room_number(normalized):
-                    st.warning("Format example: **A 09-001** (letter + space + 09-001).", icon="⚠️")
-
-        with c4:
-            st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
-
+        # Continue with the rest of the form fields (outside st.form so they update live too)
         st.text_area(
             "Problem Description*",
             max_chars=MAX_ISSUE_DESCRIPTION_CHARS,
@@ -1223,42 +1252,11 @@ with bordered_container(key="issue_form_card"):
             st.write(f"**Issue Type:** {st.session_state.get('issue_type', '')}")
             st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
 
-        submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
-
-    # ----------------------------
-    # 2) LIVE AREA: Priority + SLA (updates immediately)
-    # ----------------------------
-    st.subheader("📋 Issue Details")  # keeps the section semantics consistent
-
-    c3_live, c4_live = st.columns(2)
-
-    with c3_live:
-        # Keep left column empty so the right column aligns under Issue Type
-        st.write("")
-
-    with c4_live:
-        st.selectbox(
-            "Priority Level*",
-            options=IMPORTANCE_LEVELS,
-            key="issue_priority",
-            help=HELP_TEXTS["priority"],
-        )
-
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state.get("issue_priority", "")))
-        if sla_hours is not None:
-            target_dt = now_zurich() + timedelta(hours=int(sla_hours))
-            st.info(
-                f"⏱️ **Target handling time:** within **{sla_hours} hours** "
-                f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
-                icon="ℹ️",
-            )
-            st.caption("SLA = Service Level Agreement (service target time).")
-        else:
-            st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
-
+    # If user hasn't submitted, stop here.
     if not submitted:
-         return
+        return
 
+    # Submit handling (DB + email) stays the same
     sub = Submission(
         name=str(st.session_state["issue_name"]).strip(),
         hsg_email=str(st.session_state["issue_email"]).strip().lower(),
@@ -1301,8 +1299,6 @@ with bordered_container(key="issue_form_card"):
     else:
         st.warning(f"Note: Email notification failed: {msg}")
 
-
-    # Clear form state to reduce accidental duplicates after reruns/back/refresh.
     for k in [
         "issue_name",
         "issue_email",
@@ -1314,7 +1310,6 @@ with bordered_container(key="issue_form_card"):
     ]:
         st.session_state.pop(k, None)
 
-    # Prepare toast message for next rerun (like booking page)
     st.session_state["issue_submit_success_details"] = {
         "id": submission_id,
         "room": normalize_room(sub.room_number),
@@ -1322,7 +1317,6 @@ with bordered_container(key="issue_form_card"):
     }
     st.session_state["issue_submit_success_toast"] = True
     st.rerun()
-
 
 def build_display_table(df: pd.DataFrame) -> pd.DataFrame:
     """Prepare a user-friendly DataFrame for the dashboard table."""
