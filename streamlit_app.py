@@ -1241,6 +1241,32 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
                 st.write(f"**Priority:** {st.session_state.get('issue_priority', '')}")
 
             submitted = st.form_submit_button("🚀 Submit Issue Report", type="primary", use_container_width=True)
+    # ✅ Live-updating Priority + SLA (must be OUTSIDE the form)
+    c3_live, c4_live = st.columns(2)
+    
+    with c3_live:
+        # spacer so the alignment matches the Issue Type column on the right
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+    
+    with c4_live:
+        st.selectbox(
+            "Priority Level*",
+            options=IMPORTANCE_LEVELS,
+            key="issue_priority",
+            help=HELP_TEXTS["priority"],
+        )
+    
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state.get("issue_priority", "")))
+        if sla_hours is not None:
+            target_dt = now_zurich() + timedelta(hours=int(sla_hours))
+            st.info(
+                f"⏱️ **Target handling time:** within **{sla_hours} hours** "
+                f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                icon="ℹ️",
+            )
+            st.caption("SLA = Service Level Agreement (service target time).")
+        else:
+            st.info("⏱️ **Target handling time:** n/a.", icon="ℹ️")
 
     if not submitted:
          return
