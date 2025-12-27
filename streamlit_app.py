@@ -1186,16 +1186,17 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
     
         with c4:
             st.selectbox("Issue Type*", ISSUE_TYPES, key="issue_type")
-    
-        st.selectbox(
+
+        priority = st.selectbox(
             "Priority Level*",
             options=IMPORTANCE_LEVELS,
             key="issue_priority",
             help=HELP_TEXTS["priority"],
         )
-    
-        # ✅ Live SLA direkt unter Priority
-        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(st.session_state.get("issue_priority", "")))
+        
+        # Use the widget return value for the SLA to avoid "stale session_state" on some reruns/versions.
+        sla_hours = SLA_HOURS_BY_IMPORTANCE.get(str(priority))
+
         if sla_hours is not None:
             target_dt = now_zurich() + timedelta(hours=int(sla_hours))
             st.info(
