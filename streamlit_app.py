@@ -1201,7 +1201,7 @@ def page_submission_form(con: sqlite3.Connection, *, config: AppConfig) -> None:
             target_dt = now_zurich() + timedelta(hours=int(sla_hours))
             st.info(
                 f"⏱️ **Target handling time:** within **{sla_hours} hours** "
-                f"(approx. by **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
+                f"(approx. if submitted now: **{target_dt.strftime('%a, %d %b %Y %H:%M')}**).",
                 icon="ℹ️",
             )
             st.caption("SLA = Service Level Agreement (service target time).")
